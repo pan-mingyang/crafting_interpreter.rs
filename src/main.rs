@@ -74,32 +74,3 @@ fn main() {
     println!();
 
 }
-
-
-
-// fn main() {
-//     let f: f32 = 1.;
-//     f.to_string();
-
-//     let mut chunk = Chunk::default();
-//     chunk.add(ByteCode::Constant(Constant::Float(6.)), 1);
-//     chunk.add(ByteCode::Constant(Constant::Float(5.)), 1);
-//     chunk.add(ByteCode::Constant(Constant::Float(1.)), 1);
-//     chunk.add(ByteCode::Sub, 1);
-//     chunk.add(ByteCode::Div, 1);
-//     chunk.add(ByteCode::Out, 1);
-//     chunk.add(ByteCode::Constant(Constant::Bool(true)), 1);
-//     chunk.add(ByteCode::Constant(Constant::Ptr(246743)), 1);
-//     println!("{}", chunk.disassemble());
-//     chunk.write_file("./test_out.asm");
-//     chunk = Chunk::from_file("./test_out.asm");
-//     println!("[{:?}]", &chunk);
-//     // println!("{}", chunk.disassemble());
-
-//     let mut vm = VirtualMachine::new(chunk);
-//     vm.debug = false;
-//     _ = vm.interpret();   
-
-
-//     // println!("Hello, world!");
-// }

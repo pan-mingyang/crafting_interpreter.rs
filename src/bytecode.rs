@@ -21,6 +21,10 @@ pub enum ByteCode {
     Set(usize),
     LoadLocal(usize),
     SetLocal(usize),
+    JZ(usize),
+    JNZ(usize),
+    J(usize),
+    Nop,
 }
 
 
@@ -29,6 +33,7 @@ impl ByteCode {
     pub fn disassemble(&self) -> String {
         match self {
             ByteCode::Ret => String::from("ret"),
+            ByteCode::Hlt => String::from("hlt"),
             ByteCode::Out => String::from("out"),
             ByteCode::Add => String::from("add"),
             ByteCode::Sub => String::from("sub"),
@@ -44,13 +49,17 @@ impl ByteCode {
             ByteCode::Ge  => String::from("gt"),
             ByteCode::Gt  => String::from("ge"),
             ByteCode::Pop  => String::from("pop"),
+            ByteCode::Nop  => String::from("nop"),
             ByteCode::Push(c)  => String::from("push\t") + &c.to_str(),
             ByteCode::Value(c) => String::from("const\t") + &c.to_str(),
             ByteCode::DefGlobal(c) => String::from("def_global\t") + &c.to_string(),
             ByteCode::Load(c) => String::from("load\t") + &c.to_string(),
             ByteCode::Set(c) => String::from("set\t") + &c.to_string(),
             ByteCode::LoadLocal(c) => String::from("load_local\t") + &c.to_string(),
-            ByteCode::SetLocal(c) => String::from("set_klocal\t") + &c.to_string(),
+            ByteCode::SetLocal(c) => String::from("set_local\t") + &c.to_string(),
+            ByteCode::JZ(c) => String::from("jz\t") + &c.to_string(),
+            ByteCode::JNZ(c) => String::from("jnz\t") + &c.to_string(),
+            ByteCode::J(c) => String::from("j\t") + &c.to_string(),
             _ => String::from("[UNK]")
         }
     }
@@ -73,6 +82,14 @@ impl From<bool> for ByteCode {
         Self::Value(Value::Bool(value))
     }
 }
+
+impl From<String> for ByteCode {
+    fn from(value: String) -> Self {
+        Self::Value(Value::String(value))
+    }
+}
+
+
 
 #[derive(Default, Debug, Clone)]
 pub struct Chunk {

@@ -1,5 +1,3 @@
-use std::ops::Index;
-
 use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value};
 
 #[derive(Default, Debug)]
@@ -47,27 +45,74 @@ impl Parser {
     }
     
     pub fn compile(&mut self) -> bool {
-        loop {
-            self.declaration();
+        let result = loop {
+            self.statement();
             println!(" consume {:?}", self.current().token);
             self.consume(can_consume!(self, Token::NewLine), "Expect <NEWLINE>");
             println!("{:?}", self.current().token);
             if let Token::Eof = self.current().token {
                 break true;
             }
-        }
+        };
+        self.emit_byte(ByteCode::Hlt);
+        result
     }
 
-    fn declaration(&mut self) {
-        match self.current().token {
-            Token::Keyword(Keyword::Let) => self.let_declaration(),
-            Token::Keyword(Keyword::If)  => self.if_statement(),
-            _ => self.statement(),
-        }
-    }
+    // fn declaration(&mut self) {
+    //     match self.current().token {
+    //         Token::Keyword(Keyword::Let) => self.let_declaration(),
+    //         // Token::Keyword(Keyword::If)  => self.if_statement(),
+    //         _ => self.statement(),
+    //     }
+    // }
 
     fn if_statement(&mut self) {
-        
+        self.advance();
+        // self.consume(can_consume!(self, Token::LBracket), "Exprec '('");
+        self.expression();
+        // self.consume(can_consume!(self, Token::RBracket), "Exprec ')'");
+        let to_jump = self.emit_byte_to_fill_back(ByteCode::Nop);
+        self.statement();
+        let to_jump_end_if = self.emit_byte_to_fill_back(ByteCode::Nop);
+        let ip = self.current_chunk().len();
+        self.set_chunk(to_jump, ByteCode::JZ(ip));
+        println!(" NOW {:>?}", self.current().token);
+        self.consume(can_consume!(self, Token::NewLine), "Expect new Line");
+        let mut has_else = false;
+
+        while let Token::Keyword(Keyword::Else) = self.current().token {
+            has_else = true;
+            self.advance();
+            match self.current().token {
+                Token::Keyword(Keyword::If) |                
+                Token::Colon => self.statement(),
+                _ => self.error("Expect 'if' or ':'"),                
+            }
+        }
+        if has_else {
+            let ip = self.current_chunk().len();
+            self.set_chunk(to_jump_end_if, ByteCode::J(ip));
+        } else {
+            self.back();
+        }
+    }
+
+
+    fn while_statement(&mut self) {
+        self.advance();
+        let ip_while_start = self.current_chunk().len();
+        self.expression();
+        let to_jump = self.emit_byte_to_fill_back(ByteCode::Nop);
+        self.statement();
+        // while !self.env.local.is_empty() && self.env.local.last().unwrap().depth > self.env.scope_depth {
+        //     self.env.local.pop();
+        //     self.emit_byte(ByteCode::Pop);
+        // }
+        let to_jump_while_start = self.emit_byte_to_fill_back(ByteCode::Nop);
+        self.set_chunk(to_jump_while_start, ByteCode::J(ip_while_start));
+        let ip = self.current_chunk().len();
+        self.set_chunk(to_jump, ByteCode::JZ(ip));
+
     }
 
 
@@ -89,22 +134,22 @@ impl Parser {
                         _ => self.error("Wrong variable declaration statement")
                     }
                 },
-                Token::Comma => { self.emit_bytes(ByteCode::Nil); self.advance(); },
-                Token::NewLine => { self.emit_bytes(ByteCode::Nil); self.advance(); to_break = true },
+                Token::Comma => { self.emit_byte(ByteCode::Nil); self.advance(); },
+                Token::NewLine => { self.emit_byte(ByteCode::Nil); self.advance(); to_break = true },
                 c => self.error(&format!("Wrong variable declaration statement {:?}", c)[..]),
             }
             if global < usize::MAX {
-                self.emit_bytes(ByteCode::DefGlobal(global));
+                self.emit_byte(ByteCode::DefGlobal(global));
             } else {
                 let last_idx = self.env.local.len() - 1;
                 self.env.local[last_idx].init = true;
-                self.end_to_pop = true;
+                // self.end_to_pop = false;
             }
             if to_break {
                 break;
             }
-        }        
-        println!("end decl {:?}", self.current().token);
+        }
+        println!("end decl {:?}", self.current());
         if !def_succ { self.error("Wrong declaration"); }
     }
 
@@ -153,12 +198,9 @@ impl Parser {
 
     fn get_variable(&mut self, variable: &String) -> ByteCode {
         let length = self.env.local.len();
-        println!("            cmp {:?}", self.env.local);
-        println!("            cmp {:?}", !self.env.local.is_empty() );
         if !self.env.local.is_empty() {
             for i in (0..length).rev() {
                 let s = self.env.local[i].name.name.clone();
-                println!("            cmp {} {}", s, variable);
                 if s == *variable && self.env.local[i].init {
                     return ByteCode::LoadLocal(i);
                 }
@@ -182,13 +224,12 @@ impl Parser {
                 self.advance();
                 self.expression();
                 match index {
-                    ByteCode::Load(c) => self.emit_bytes(ByteCode::Set(c)),
-                    ByteCode::LoadLocal(c) => self.emit_bytes(ByteCode::SetLocal(c)),
+                    ByteCode::Load(c) => self.emit_byte(ByteCode::Set(c)),
+                    ByteCode::LoadLocal(c) => self.emit_byte(ByteCode::SetLocal(c)),
                     _ => (),
                 }
-                
             } else {
-                self.emit_bytes(index);
+                self.emit_byte(index);
             }
         }
     }
@@ -204,18 +245,36 @@ impl Parser {
 
     fn statement(&mut self) {
         match self.current().token {
-            Token::Keyword(Keyword::Print) => self.print_statement(),
+            Token::Keyword(Keyword::Print) => { self.print_statement(); self.end_to_pop = false; },
+            Token::Keyword(Keyword::If)    => {
+                self.if_statement();
+                self.end_to_pop = false;
+            },
+            Token::Keyword(Keyword::While)    => {
+                self.while_statement();
+                self.end_to_pop = false;
+            },
             Token::Keyword(Keyword::Block) => {
                 self.advance();
                 self.begin_block();
                 self.block();
                 self.end_block();
                 self.end_to_pop = false;
+            },            
+            Token::Colon => {
+                self.begin_block();
+                self.block();
+                self.end_block();
+                self.end_to_pop = false;
+            },
+            Token::Keyword(Keyword::Let) => {
+                self.let_declaration();
+                self.end_to_pop = false;
             },
             _ => self.expression(),
         }
         if self.end_to_pop {
-            self.emit_bytes(ByteCode::Pop);
+            self.emit_byte(ByteCode::Pop);
         } else {
             self.end_to_pop = true;
         }
@@ -227,9 +286,10 @@ impl Parser {
     fn block(&mut self) {
         while !(matches!(self.current().token, Token::EndBlock)) {
             println!("    Block {:?}", self.current().token);
-            self.declaration();
+            self.statement();
+            println!("delc then {:?}", self.current());
             self.consume(can_consume!(self, Token::NewLine), "Expect new Line");
-        }        
+        }
     }
 
     fn begin_block(&mut self) {
@@ -245,15 +305,13 @@ impl Parser {
         self.consume(can_consume!(self, Token::EndBlock), "Expect end block indent!");
         self.env.scope_depth -= 1;
         
-        println!("      ENV  {:?}", self.env.local);
-
         for i in &self.env.local {
             println!("   ENV {:?}", i);
         }
 
         while !self.env.local.is_empty() && self.env.local.last().unwrap().depth > self.env.scope_depth {
             self.env.local.pop();
-            self.emit_bytes(ByteCode::Pop);
+            self.emit_byte(ByteCode::Pop);
         }
     }
 
@@ -264,7 +322,8 @@ impl Parser {
         self.expression();
         self.consume(can_consume!(self, Token::RBracket), "Expect ')'");
         println!("End print {:?}", self.current().token);
-        self.emit_bytes(ByteCode::Out);
+        self.emit_byte(ByteCode::Out);
+        self.emit_byte(ByteCode::Pop);
     }
 
     fn unary(&mut self, can_assign: bool) {
@@ -272,8 +331,8 @@ impl Parser {
         self.parse_precedence(Precedence::Unary);
         match prev.token {
             Token::Plus => (),
-            Token::Minus => self.emit_bytes(ByteCode::Neg),
-            Token::Bang =>  self.emit_bytes(ByteCode::Not),
+            Token::Minus => self.emit_byte(ByteCode::Neg),
+            Token::Bang =>  self.emit_byte(ByteCode::Not),
             _ => self.error("Error Unary Operator!"),
         }
     }
@@ -283,18 +342,18 @@ impl Parser {
         let (_, _, prec) = Self::get_rule(prev.token.clone());
         self.parse_precedence(Precedence::from((prec as i32) + 1));        
         match prev.token {
-            Token::Plus   => self.emit_bytes(ByteCode::Add),
-            Token::Minus  => self.emit_bytes(ByteCode::Sub),
-            Token::Star   => self.emit_bytes(ByteCode::Mul),
-            Token::Slash  => self.emit_bytes(ByteCode::Div),
-            Token::Eq     => self.emit_bytes(ByteCode::Eq),
-            Token::Ne     => self.emit_bytes(ByteCode::Ne),
-            Token::Lt     => self.emit_bytes(ByteCode::Lt),
-            Token::Le     => self.emit_bytes(ByteCode::Le),
-            Token::Gt     => self.emit_bytes(ByteCode::Gt),
-            Token::Ge     => self.emit_bytes(ByteCode::Ge),
-            Token::Keyword(Keyword::And) => self.emit_bytes(ByteCode::And),
-            Token::Keyword(Keyword::Or)  => self.emit_bytes(ByteCode::Or),
+            Token::Plus   => self.emit_byte(ByteCode::Add),
+            Token::Minus  => self.emit_byte(ByteCode::Sub),
+            Token::Star   => self.emit_byte(ByteCode::Mul),
+            Token::Slash  => self.emit_byte(ByteCode::Div),
+            Token::Eq     => self.emit_byte(ByteCode::Eq),
+            Token::Ne     => self.emit_byte(ByteCode::Ne),
+            Token::Lt     => self.emit_byte(ByteCode::Lt),
+            Token::Le     => self.emit_byte(ByteCode::Le),
+            Token::Gt     => self.emit_byte(ByteCode::Gt),
+            Token::Ge     => self.emit_byte(ByteCode::Ge),
+            Token::Keyword(Keyword::And) => self.emit_byte(ByteCode::And),
+            Token::Keyword(Keyword::Or)  => self.emit_byte(ByteCode::Or),
             _ => self.error("Error Binary Operator!"),
         }
     }
@@ -304,7 +363,8 @@ impl Parser {
     {
         match token {
             Token::LBracket  => (Some(Self::group),  None,               Precedence::None),
-            Token::Bang      => (Some(Self::unary),  None,               Precedence::None),
+            Token::Bang | Token::Keyword(Keyword::Not)
+                            => (Some(Self::unary),  None,               Precedence::None),
             Token::Plus      => (None,               Some(Self::binary), Precedence::Term),
             Token::Minus     => (Some(Self::unary),  Some(Self::binary), Precedence::Term),
             Token::Star      => (None,               Some(Self::binary), Precedence::Factor),
@@ -317,10 +377,12 @@ impl Parser {
             Token::Ge        => (None,               Some(Self::binary), Precedence::Cmp),
             // Token::Assign    => (None,               Some(Self::binary), Precedence::Assign),
             
-            Token::CFloat(_)     => (Some(Self::number), None,               Precedence::None),
-            Token::CInt(_)       => (Some(Self::number), None,               Precedence::None),
-            Token::Identifier(_) => (Some(Self::variable), None,               Precedence::None),
+            Token::CFloat(_)     => (Some(Self::number),   None,  Precedence::None),
+            Token::CInt(_)       => (Some(Self::number),   None,  Precedence::None),
+            Token::CStr(_)       => (Some(Self::number),   None,  Precedence::None),
+            Token::Identifier(_) => (Some(Self::variable), None,  Precedence::None),
 
+            Token::Keyword(Keyword::Nil)  => (Some(Self::literal), None, Precedence::None),
             Token::Keyword(Keyword::True)  => (Some(Self::literal), None, Precedence::None),
             Token::Keyword(Keyword::False) => (Some(Self::literal), None, Precedence::None),
             Token::Keyword(Keyword::And)   => (None, Some(Self::binary), Precedence::And),
@@ -329,20 +391,22 @@ impl Parser {
         }
     }
 
-    fn number(&mut self, can_assign: bool) {
+    fn number(&mut self, _: bool) {
         let token = &self.previous().token;
         match token {
-            Token::CInt(n) => self.emit_bytes(ByteCode::from(*n)),
-            Token::CFloat(n) => self.emit_bytes(ByteCode::from(*n)),
+            Token::CInt(n) => self.emit_byte(ByteCode::from(*n)),
+            Token::CFloat(n) => self.emit_byte(ByteCode::from(*n)),
+            Token::CStr(s) => self.emit_byte(ByteCode::from(s.clone())),
             _ => self.error("Expect Number")
         }
     }
 
-    fn literal(&mut self, can_assign: bool) {
+    fn literal(&mut self, _: bool) {
         let token = &self.previous().token;
         match token {
-            Token::Keyword(Keyword::True) => self.emit_bytes(ByteCode::from(true)),
-            Token::Keyword(Keyword::False) => self.emit_bytes(ByteCode::from(false)),
+            Token::Keyword(Keyword::True) => self.emit_byte(ByteCode::from(true)),
+            Token::Keyword(Keyword::False) => self.emit_byte(ByteCode::from(false)),
+            Token::Keyword(Keyword::Nil) => self.emit_byte(ByteCode::Value(Value::Nil)),
             _ => self.error("Expect boolean literal")
         }
     }
@@ -381,10 +445,22 @@ impl Parser {
         &mut self.chunk
     }
 
-    pub fn emit_bytes(&mut self, byte_code: ByteCode) {
+    fn set_chunk(&mut self, ip: usize, value: ByteCode) {
+        let chunk = self.current_chunk();
+        chunk[ip] = value;
+    }
+
+    pub fn emit_byte(&mut self, byte_code: ByteCode) {
         let line = self.previous().line;
         let chunk = self.current_chunk();        
         chunk.add(byte_code, line);
+    }
+
+    pub fn emit_byte_to_fill_back(&mut self, byte_code: ByteCode) -> usize {
+        let line = self.previous().line;
+        let chunk = self.current_chunk();        
+        chunk.add(byte_code, line);
+        chunk.len() - 1
     }
 
     pub fn error(&mut self, msg: &str) {
@@ -408,6 +484,15 @@ impl Parser {
     pub fn advance(&mut self) {
         self.ptr += 1;       
     }
+
+    pub fn back(&mut self) {
+        if self.ptr > 0 {
+            self.ptr -= 1;   
+        } else {
+            self.error("Cannot back `ip`!")
+        } 
+    }
+
 
     fn synchronize(&mut self) {
         self.panic_mode = false;

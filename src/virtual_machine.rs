@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::ops::{Add, Sub, Mul, Div, Neg};
+use std::path::Components;
 use std::vec;
+use std::io;
 
 use crate::bytecode::*;
 use crate::value::*;
@@ -109,12 +111,13 @@ impl VirtualMachine {
                 asm += &ins.disassemble();
                 println!("{}", asm);
             }
+            // println!("RUN {}", ins.disassemble());
+            let mut next_ip = self.ip + 1;
             match ins {
                 ByteCode::Ret => {
-                        self.ip = 
+                        next_ip = 
                             if let StackElem::Ptr(p) = self.pop() {p}
-                            else { return Err(InterpretError::CompileError); } ;
-                        continue;
+                            else { return Err(InterpretError::CompileError); };
                     },
                 ByteCode::Add => apply_op!(self, check_number, add),
                 ByteCode::Sub => apply_op!(self, check_number, sub),
@@ -131,10 +134,33 @@ impl VirtualMachine {
                 ByteCode::Neg => apply_op_unary!(self, check_number, neg),
                 ByteCode::Not => apply_op_unary!(self, check_bool, bool_not),
 
-                ByteCode::Out => { println!("{}", self.top().to_str()); },
+                ByteCode::Out => { println!("[STDOUT] {}", self.top().to_str()); },
                 ByteCode::Value(c) => self.push(c.clone()),
                 ByteCode::Hlt =>  return Ok(()),
-                ByteCode::Pop => {self.pop(); self.print_stack();},
+                ByteCode::Pop => {self.pop(); /*self.print_stack();*/},
+                ByteCode::J(n) => {
+                    next_ip = *n;
+                    // println!("GLobal {:?}", self.global);
+                    // let mut s = String::new();
+                    // io::stdin().read_line(&mut s);
+                },
+                ByteCode::Nop => (),
+                ByteCode::JZ(n) => { 
+                    if let Value::Bool(b) = self.peek(0) {
+                        if !*b { next_ip = *n; }
+                        self.pop();
+                    } else {
+                        self.error("Expect bool on stack top!");
+                    }
+                },
+                ByteCode::JNZ(n) => { 
+                    if let Value::Bool(b) = self.peek(0) {
+                        if *b { next_ip = *n; }
+                        self.pop();
+                    } else {
+                        self.error("Expect bool on stack top!");
+                    }
+                },
                 ByteCode::DefGlobal(c) => { 
                     if let Value::String(s) = &self.constants[*c] {
                         let value = self.peek(0);
@@ -175,7 +201,6 @@ impl VirtualMachine {
                     }
                     // self.pop();
                 },
-
                 ByteCode::LoadLocal(c) => { 
                     if *c < self.stack.len() {
                         let value = self.stack[*c].clone();
@@ -195,7 +220,7 @@ impl VirtualMachine {
                 },
                 _ => return Ok(()),
             }
-            self.ip += 1;
+            self.ip = next_ip;
             // self.print_stack();
         }
     }

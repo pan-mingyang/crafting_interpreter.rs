@@ -60,6 +60,7 @@ impl Scanner {
     pub fn scan(&mut self) -> Vec<TokenWithInfo> {
         let mut token_seq: Vec<(Token, usize)> = Vec::new();
         while !self.is_finished() {
+            // println!("{} {}", self.ptr, self.cur_char());
             let ch = self.cur_char();
             let mut next_flag = true;
             let tok = match ch {                
@@ -156,7 +157,7 @@ impl Scanner {
             }
             let mut has_space = false;
             // let pre_token = result.last().unwrap().token.clone();
-            if *line != pre_line && !matches!(result.last().unwrap().token.clone(), Token::NewLine) {
+            if !result.is_empty() && *line != pre_line && !matches!(result.last().unwrap().token.clone(), Token::NewLine) {
                 result.push(TokenWithInfo {token: Token::NewLine, line: pre_line + 1, level: 0});
                 has_space = true;
             }
@@ -284,9 +285,10 @@ impl Scanner {
                         _ => panic!("Unk \\{} token!", self.cur_char()),
                     }
                 },
-                '"' => break,
+                '\"' => {self.next(); break},
                 _ => s.push(self.cur_char()),
             }
+            self.next();
         }
         Token::CStr(s)
     }
