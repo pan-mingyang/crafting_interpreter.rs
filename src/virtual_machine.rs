@@ -1,6 +1,10 @@
-use std::{default, ops::{Add, Sub, Mul, Div, Neg}};
+use std::collections::HashMap;
+use std::ops::{Add, Sub, Mul, Div, Neg};
+use std::vec;
 
 use crate::bytecode::*;
+use crate::value::*;
+use crate::object::*;
 
 pub enum InterpretError {
     RuntimeError,
@@ -8,52 +12,7 @@ pub enum InterpretError {
 }
 
 pub type InterpretResult = Result<(), InterpretError>;
-
-/*
-
-#[derive(Default, Debug)]
-pub enum StackElem {
-    #[default]
-    Nil,
-    Constant(Constant),
-    Ptr(usize)
-}
-
-macro_rules! impl_binary_op_for_stack_elem {
-    ($clz:ident, $op:ident) => {
-        impl $clz for StackElem {
-            type Output = StackElem;
-        
-            fn $op(self, rhs: Self) -> Self::Output {
-                if let StackElem::Constant(c1) = self {
-                    if let StackElem::Constant(c2) = rhs {
-                        return StackElem::Constant(c1.$op(c2));
-                    }
-                }
-                StackElem::Nil
-            }
-        }
-        
-    };
-}
-impl_binary_op_for_stack_elem!(Add, add);
-impl_binary_op_for_stack_elem!(Sub, sub);
-impl_binary_op_for_stack_elem!(Mul, mul);
-impl_binary_op_for_stack_elem!(Div, div);
-
-
-impl StackElem {
-    pub fn to_str(&self) -> String {
-        match self {
-            StackElem::Nil => String::from("Nil"),
-            StackElem::Constant(c) => c.to_str(),
-            StackElem::Ptr(c) => c.to_string(),
-        }
-    }
-}
-*/
-
-pub type StackElem = Constant;
+pub type StackElem = Value;
 pub type Stack = Vec<StackElem>;
 
 #[derive(Default, Debug)]
@@ -62,13 +21,17 @@ pub struct VirtualMachine {
     pub stack: Stack,
     pub ip: usize,
     pub debug: bool,
+    // pub static_table: Vec<dyn DObject>
+    // pub panic_mode: bool,
+    pub global: HashMap<String, Value>,
+    pub constants: Vec<Value>,
 }
 
 macro_rules! apply_op_unary {
     ($this:ident, $check:ident, $func:ident) => {{
         $this.$check($this.peek(0), $this.peek(0)); 
         let a = $this.pop();
-        $this.push(Constant::from(a.$func()));
+        $this.push(Value::from(a.$func()));
     }};
 }
 
@@ -77,16 +40,16 @@ macro_rules! apply_op {
         $this.$check($this.peek(0), $this.peek(1)); 
         let a = $this.pop();
         let b = $this.pop(); 
-        $this.push(Constant::from(a.$func(b)));
+        $this.push(Value::from(b.$func(a)));
     }};
 }
 
 macro_rules! apply_op_cmp {
     ($this:ident, $func:ident) => {{
         $this.check_number($this.peek(0), $this.peek(1)); 
-        let a = $this.pop();
+        let a = &$this.pop();
         let b = &$this.pop(); 
-        $this.push(Constant::from(a.$func(b)));
+        $this.push(Value::from(b.$func(a)));
     }};
 }
 
@@ -94,7 +57,8 @@ macro_rules! apply_op_cmp {
 impl VirtualMachine {
 
     pub fn new(chunk: Chunk) -> Self {
-        Self { chunk: chunk, stack: Vec::new(), ip: 0, debug: true }
+        Self { chunk: chunk, stack: Vec::new(), ip: 0, debug: true,
+               global: HashMap::new(), constants: vec![] }
     }
 
     pub fn push(&mut self, s: StackElem) {
@@ -113,19 +77,19 @@ impl VirtualMachine {
         &self.stack[self.stack.len() - 1 - i]
     }
 
-    fn check_number(&self, c1: &Constant, c2: &Constant) {
+    fn check_number(&self, c1: &Value, c2: &Value) {
         match (c1, c2) {
-            (Constant::Int(_), Constant::Int(_))     |
-            (Constant::Int(_), Constant::Float(_))   |
-            (Constant::Float(_), Constant::Int(_))   |
-            (Constant::Float(_), Constant::Float(_)) => (),
+            (Value::Int(_), Value::Int(_))     |
+            (Value::Int(_), Value::Float(_))   |
+            (Value::Float(_), Value::Int(_))   |
+            (Value::Float(_), Value::Float(_)) => (),
             _ => self.error("The type to be operated shoule be Number")
         }
     }
 
-    fn check_bool(&self, c1: &Constant, c2: &Constant) {
+    fn check_bool(&self, c1: &Value, c2: &Value) {
         match (c1, c2) {
-            (Constant::Bool(_), Constant::Bool(_))=> (),
+            (Value::Bool(_), Value::Bool(_))=> (),
             _ => self.error("The type to be operated shoule be Boolean")
         }
     }
@@ -165,38 +129,87 @@ impl VirtualMachine {
                 ByteCode::Gt  => apply_op_cmp!(self, gt),
                 ByteCode::Ge  => apply_op_cmp!(self, ge),                
                 ByteCode::Neg => apply_op_unary!(self, check_number, neg),
-                ByteCode::Not => apply_op_unary!(self, check_bool, bool_not),               
-                ByteCode::Out => println!("{}", self.top().to_str()),
-                ByteCode::Constant(c) => self.push(c.clone()),
+                ByteCode::Not => apply_op_unary!(self, check_bool, bool_not),
+
+                ByteCode::Out => { println!("{}", self.top().to_str()); },
+                ByteCode::Value(c) => self.push(c.clone()),
                 ByteCode::Hlt =>  return Ok(()),
+                ByteCode::Pop => {self.pop(); self.print_stack();},
+                ByteCode::DefGlobal(c) => { 
+                    if let Value::String(s) = &self.constants[*c] {
+                        let value = self.peek(0);
+                        if !self.global.contains_key(s) {
+                            self.global.insert(s.clone(), value.clone());
+                        } else {
+                            self.error(&format!("Variable name '{}' is defined!", s)[..]);
+                        }
+                    } else {
+                        self.error("Error variable name type!");
+                    }
+                    self.pop();
+                },
+                ByteCode::Load(c) => { 
+                    if let Value::String(s) = &self.constants[*c] {
+                        if self.global.contains_key(s) {
+                            let value = self.global.get(s).unwrap();
+                            self.push(value.clone());
+                        }
+                        else {
+                            self.error(&format!("Variable name '{}' is not defined!", s)[..]);
+                        }
+                    } else {
+                        self.error("Error variable name type!");
+                    }
+                },
+                ByteCode::Set(c) => { 
+                    if let Value::String(s) = &self.constants[*c] {
+                        if self.global.contains_key(s) {
+                            let value = self.peek(0);
+                            self.global.insert(s.clone(), value.clone());
+                        }
+                        else {
+                            self.error(&format!("Variable name '{}' is not defined!", s)[..]);
+                        }
+                    } else {
+                        self.error("Error variable name type!");
+                    }
+                    // self.pop();
+                },
+
+                ByteCode::LoadLocal(c) => { 
+                    if *c < self.stack.len() {
+                        let value = self.stack[*c].clone();
+                        self.push(value.clone());
+                    } else {
+                        self.error("there's no such local variable !");
+                    }
+                },
+                ByteCode::SetLocal(c) => { 
+                    let value = self.peek(0);
+                    if *c < self.stack.len() {
+                        self.stack[*c] = value.clone();
+                    } else {
+                        self.error("there's no such local variable !");
+                    }
+                    // self.pop();
+                },
                 _ => return Ok(()),
             }
             self.ip += 1;
+            // self.print_stack();
         }
     }
 
+    pub fn print_stack(&self) {
+        print!("[ ");
+        for i in &self.stack {
+            print!("{:?} ", i)
+        }
+        print!(" ]\n");
+    }
 
     pub fn error(&self, msg: &str) -> ! {
         panic!("Runtime Error: {} at line {}", msg, self.chunk.lines[self.ip])
     }
 
 }
-
-/*
-ByteCode::Add => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a + b)},
-ByteCode::Sub => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a - b)},
-ByteCode::Mul => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a * b)},
-ByteCode::Div => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a / b)},
-ByteCode::And => { self.check_bool(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a.bool_and(b))},
-ByteCode::Or  => { self.check_bool(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(a.bool_or(b))},
-ByteCode::Neg => { self.check_number(self.peek(0), self.peek(0)); let a = self.pop(); self.push(-a)},
-ByteCode::Not => { self.check_bool(self.peek(0), self.peek(0)); let a = self.pop(); self.push(a.bool_not())},
-
-ByteCode::Eq  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a == b))},
-ByteCode::Ne  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a != b))},
-ByteCode::Lt  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a <  b))},
-ByteCode::Le  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a <= b))},
-ByteCode::Gt  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a >  b))},
-ByteCode::Ge  => { self.check_number(self.peek(0), self.peek(1)); let a = self.pop(); let b = self.pop(); self.push(Constant::Bool(a >= b))},
-
-*/

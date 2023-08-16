@@ -1,3 +1,4 @@
+use core::prelude;
 use std::{fs::File, error::Error, io::Read};
 
 
@@ -10,6 +11,8 @@ pub enum Token {
     Plus, Minus, Star, Slash, Mod, LAnd, LOr, LNot, Assign,
     Eq, Ne, Le, Ge, Lt, Gt,
     Point, To, VSlash, Bang,
+    BeginBlock, EndBlock,
+    NewLine,
     Space(usize),
     CInt(i64), CFloat(f64), CStr(String),
     // Keywords
@@ -26,7 +29,7 @@ pub enum Keyword {
     And, Or, Not, Int, Str, Float, Bool,
     True, False, Nil,
     Import, Return, Kself,
-    Print, 
+    Print, Block
 }
 
 
@@ -63,7 +66,7 @@ impl Scanner {
                 'a'..='z' | 'A'..='Z' | '_'  => {next_flag = false; self.match_identity()},
                 '0'..='9' => { next_flag = false; self.match_number()},
                 '"' => { next_flag = false; self.match_str() },                
-                '!' | '>' | '<' | '-' | '=' | '/' => {
+                '!' | '>' | '<' | '-' | '=' | '/' | '|' | '&' => {
                     self.next(); 
                     let mut token = Token::Unk;
                     if !self.is_finished() {
@@ -74,6 +77,8 @@ impl Scanner {
                             ('-', '>') => Token::Point,
                             ('=', '>') => Token::To,
                             ('=', '=') => Token::Eq,
+                            ('|', '|') => Token::Keyword(Keyword::Or),
+                            ('&', '&') => Token::Keyword(Keyword::And),
                             ('/', '*') | ('/', '/') => {self.skip_comment(); /* self.back(); */ Token::Empty},
                             _ => Token::Unk,                             
                         }
@@ -86,6 +91,8 @@ impl Scanner {
                             '-' => {self.back(); Token::Minus},
                             '=' => {self.back(); Token::Assign},
                             '/' => {self.back(); Token::Slash},
+                            '|' => {self.back(); Token::LOr},
+                            '&' => {self.back(); Token::LAnd},
                             _ => Token::Unk,
                         }
                      }
@@ -107,8 +114,6 @@ impl Scanner {
                 '+' => Token::Plus,
                 '*' => Token::Star,
                 '%' => Token::Mod,
-                '&' => Token::LAnd,
-                '|' => Token::LOr,
                 '^' => Token::LNot,
                 '\\' => Token::VSlash,
                 _ => {
@@ -125,20 +130,75 @@ impl Scanner {
                 self.next();
             }
         }
-        token_seq.push((Token::Eof, token_seq[token_seq.len() - 1].1));
-        Self::post_process(&mut token_seq)
+        let line = if token_seq.is_empty() {0usize} else {token_seq.last().unwrap().1};
+        token_seq.push((Token::Eof, line));
+        self.post_process(&mut token_seq)
     }
 
-    fn post_process(token_seq: &mut Vec<(Token, usize)>) -> Vec<TokenWithInfo> {
-        token_seq.iter()
-            .filter(|(token, _)| if let Token::Empty = token {false} else {true})
-            .map(|(token, line)| TokenWithInfo {
-                token: token.clone(),
-                line: *line,
-                level: 0
-            } )
-            .collect()
-        
+    fn post_process(&mut self, token_seq: &mut Vec<(Token, usize)>) -> Vec<TokenWithInfo> {
+        let mut result: Vec<TokenWithInfo> = Vec::new();
+        let mut pre_line = 0usize;
+        let mut indents: Vec<isize> = vec![0];
+        let token_seq: Vec<_> = token_seq
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, (tok, line))| {
+                            if *i <= 1 || *i >= token_seq.len() - 2 {true}
+                            else {!(matches!(tok, Token::Space(_)) && *line != token_seq[*i+1].1) }
+                        })
+                        .map(|(_, k)| k)
+                        .filter(|(token, _)| !matches!(token, Token::Empty))
+                        .collect();
+
+        for (i, (token, line)) in token_seq.iter().enumerate() {
+            if let Token::Empty = token {
+                continue
+            }
+            let mut has_space = false;
+            // let pre_token = result.last().unwrap().token.clone();
+            if *line != pre_line && !matches!(result.last().unwrap().token.clone(), Token::NewLine) {
+                result.push(TokenWithInfo {token: Token::NewLine, line: pre_line + 1, level: 0});
+                has_space = true;
+            }
+            pre_line = *line;
+            if has_space || matches!(token, Token::Space(_)) {
+                let space = match token {
+                    Token::Space(s) => *s,
+                    _ => 0,
+                };
+                // let Token::Space(space) = token
+                if (space as isize) > (*indents.last().unwrap()) {
+                    indents.push(space as isize);
+                    result.push(TokenWithInfo { token: Token::BeginBlock, line: *line + 1, level: 0 });
+                } else if (space as isize) < (*indents.last().unwrap()) {
+                    let mut cnt: i32 = 0;
+                    while (space as isize) < (*indents.last().unwrap()) {
+                        indents.pop();
+                        result.push(TokenWithInfo { token: Token::EndBlock, line: *line, level: 0 });
+                        result.push(TokenWithInfo { token: Token::NewLine,  line: *line, level: 0 });
+                    }
+                    if (space as isize) > (*indents.last().unwrap()) {
+                        panic!("Wrong indent at line {}", *line + 1);
+                    }
+                }
+            }
+
+            if !matches!(token, Token::Space(_)) {
+                result.push(TokenWithInfo {
+                    token: token.clone(),
+                    line: *line + 1,
+                    level: 0
+                });
+            }
+        }
+
+        // println!("Final Tok Seq");
+        // for TokenWithInfo { token, line, level: _ } in &mut result.iter() {
+        //     println!("{}\t{:?}", line, token);
+        // }
+        // println!();
+        // println!();
+        result
     }
 
     fn match_identity(&mut self) -> Token {
@@ -178,6 +238,7 @@ impl Scanner {
             "return" => Token::Keyword(Keyword::Return),
             "self" => Token::Keyword(Keyword::Kself),
             "print" => Token::Keyword(Keyword::Print),
+            "block" => Token::Keyword(Keyword::Block),
             s => Token::Identifier(Identifier { name: String::from(s) }),
         }
 
@@ -280,6 +341,7 @@ impl Scanner {
         let mut f = File::open(path)?;
         let mut code = String::new();
         _ = f.read_to_string(&mut code)?;
+        code.push('\n');
         Ok(Self { code, ..Default::default() })
     }
 

@@ -4,14 +4,17 @@ mod scanner;
 mod parser;
 mod precidence;
 mod value;
+mod object;
 
-use std::default;
+use std::rc::Rc;
 
 use bytecode::*;
 use virtual_machine::*;
 use scanner::*;
 use parser::*;
 use value::*;
+use object::*;
+
 
 
 fn main() {
@@ -40,14 +43,35 @@ fn main() {
         println!("{}\t{:>?}", line, token);
     }
 
-
-    // let mut parser = Parser::from_tokens(token_list);
-    // parser.compile();
+    let mut parser = Parser::from_tokens(token_list);
+    parser.compile();
     
-    // parser.get_chunk().write_file("test_out.asm");
+    parser.get_chunk().write_file("test_out.asm");
 
-    // println!();
-    // println!("{}", parser.get_chunk().disassemble());
+    println!();
+    println!("{}", parser.get_chunk().disassemble());
+    let mut vm = VirtualMachine::new(parser.get_chunk().clone());
+    vm.debug = false;
+    vm.constants = parser.constants.clone();
+    
+    let r = vm.interpret();
+
+    println!("\nConstants:");
+    for x in &vm.constants {
+        println!("{:?}", x);
+    }
+
+    println!("\nGlobal:");
+    for x in &vm.global {
+        println!("{:?}", x);
+    }
+
+
+    println!("\nStack:");
+    for x in &vm.stack {
+        println!("{:?}", x);
+    }
+    println!();
 
 }
 

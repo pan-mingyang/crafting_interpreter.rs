@@ -1,136 +1,26 @@
-use std::{ops::{DerefMut, Deref, Add, Sub, Mul, Div, Neg}, default, fs::File, io::BufReader, cmp::Ordering};
+use std::{ops::{DerefMut, Deref}, fs::File, io::BufReader, cmp::Ordering};
 use std::io::prelude::*;
 
-#[derive(Default, Debug, Clone, PartialEq)]
-pub enum Constant {
-    #[default]
-    Nil,
-    Unk,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Ptr(usize),
-}
+use crate::value::*;
 
-pub enum CmpResult {
-    G, E, L
-}
-
-impl Constant {
-    pub fn to_str(&self) -> String {
-        match self {
-            Constant::Nil => String::from("Nil"),
-            Constant::Unk => String::from("[Unk]"),
-            Constant::Bool(c) => c.to_string(),
-            Constant::Int(c) => c.to_string(),
-            Constant::Float(c) => {
-                let s = c.to_string();
-                if s.contains(".") {s} else {s + "."}
-            },
-            Constant::Ptr(c) => format!("P_{}", c),
-        }
-    }
-
-    pub fn bool_and(self, rhs: Self) -> Self {
-        match (self, rhs) {
-            (Self::Bool(c1), Self::Bool(c2)) => Self::Bool(c1 && c2),
-            _ => Self::Nil // todo
-        }
-    }
-
-    pub fn bool_or(self, rhs: Self) -> Self {
-        match (self, rhs) {
-            (Self::Bool(c1), Self::Bool(c2)) => Self::Bool(c1 || c2),
-            _ => Self::Nil // todo
-        }
-    }
-
-    pub fn bool_not(self) -> Self {
-        match self {
-            Self::Bool(c) => Self::Bool(!c),
-            _ => Self::Nil // todo
-        }
-    }
-
-
-}
-
-macro_rules! impl_binary_op_for_constant {
-    ($clz:ident, $op:ident) => {
-        impl $clz for Constant {
-            type Output = Constant;        
-            fn $op(self, rhs: Self) -> Self::Output {
-                match (self, rhs) {
-                    (Self::Int(c1), Self::Int(c2)) => Self::Int(c1.$op(c2)),
-                    (Self::Int(c1), Self::Float(c2)) => Self::Float((c1 as f64).$op(c2)),
-                    (Self::Float(c1), Self::Int(c2)) => Self::Float(c1.$op(c2 as f64)),
-                    (Self::Float(c1), Self::Float(c2)) => Self::Float(c1.$op(c2)),
-                    _ => Self::Nil // todo
-                }
-            }
-        }
-    };
-}
-
-impl Neg for Constant {
-    type Output = Self;
-    fn neg(self) -> Self::Output {
-        match self {
-            Self::Int(c) => Self::Int(-c),
-            Self::Float(c) => Self::Float(-c),
-            _ => Self::Nil, // todo
-        }
-    }
-}
-
-impl_binary_op_for_constant!(Add, add);
-impl_binary_op_for_constant!(Sub, sub);
-impl_binary_op_for_constant!(Mul, mul);
-
-impl Div for Constant {
-    type Output = Self;        
-    fn div(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (Self::Int(c1), Self::Int(c2)) => Self::Float((c1 as f64).div(c2 as f64)),
-            (Self::Int(c1), Self::Float(c2)) => Self::Float((c1 as f64).div(c2)),
-            (Self::Float(c1), Self::Int(c2)) => Self::Float(c1.div(c2 as f64)),
-            (Self::Float(c1), Self::Float(c2)) => Self::Float(c1.div(c2)),
-            _ => Self::Nil // todo
-        }
-    }
-}
-
-
-impl PartialOrd for Constant {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match (self, other) {
-            (Self::Int(c1),   Self::Int(c2))   => if *c1 == *c2 { Some(Ordering::Equal) } else if *c1 > *c2 { Some(Ordering::Greater) } else { Some(Ordering::Less) },
-            (Self::Int(c1),   Self::Float(c2)) => if *c1 as f64 == *c2 { Some(Ordering::Equal) } else if *c1 as f64 > *c2 { Some(Ordering::Greater) } else { Some(Ordering::Less) },
-            (Self::Float(c1), Self::Int(c2))   => if *c1 == *c2 as f64 { Some(Ordering::Equal) } else if *c1 > *c2 as f64 { Some(Ordering::Greater) } else { Some(Ordering::Less) },
-            (Self::Float(c1), Self::Float(c2)) => if c1 == c2 { Some(Ordering::Equal) } else if c1 > c2 { Some(Ordering::Greater) } else { Some(Ordering::Less) },
-            _ => None
-        }
-    }
-}
-
-impl From<bool> for Constant {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub enum ByteCode {    
     #[default]
     Hlt,
     Ret,
     Out,
-    Constant(Constant),
+    Value(Value),
     Add, Sub, Mul, Div, Neg,
     True, False,
     Nil,
     And, Or, Not,
     Eq, Ne, Lt, Le, Gt, Ge,
+    Pop, Push(Value),
+    DefGlobal(usize),
+    Load(usize),
+    Set(usize),
+    LoadLocal(usize),
+    SetLocal(usize),
 }
 
 
@@ -138,13 +28,29 @@ impl ByteCode {
 
     pub fn disassemble(&self) -> String {
         match self {
-            ByteCode::Ret => String::from("RET"),
-            ByteCode::Out => String::from("OUT"),
-            ByteCode::Add => String::from("ADD"),
-            ByteCode::Sub => String::from("SUB"),
-            ByteCode::Mul => String::from("MUL"),
-            ByteCode::Div => String::from("DIV"),
-            ByteCode::Constant(c) => String::from("C\t") + &c.to_str(),
+            ByteCode::Ret => String::from("ret"),
+            ByteCode::Out => String::from("out"),
+            ByteCode::Add => String::from("add"),
+            ByteCode::Sub => String::from("sub"),
+            ByteCode::Mul => String::from("mul"),
+            ByteCode::Div => String::from("div"),
+            ByteCode::And => String::from("and"),
+            ByteCode::Or  => String::from("or"),
+            ByteCode::Not => String::from("not"),
+            ByteCode::Eq  => String::from("eq"),
+            ByteCode::Ne  => String::from("ne"),
+            ByteCode::Le  => String::from("le"),
+            ByteCode::Lt => String::from("lt"),
+            ByteCode::Ge  => String::from("gt"),
+            ByteCode::Gt  => String::from("ge"),
+            ByteCode::Pop  => String::from("pop"),
+            ByteCode::Push(c)  => String::from("push\t") + &c.to_str(),
+            ByteCode::Value(c) => String::from("const\t") + &c.to_str(),
+            ByteCode::DefGlobal(c) => String::from("def_global\t") + &c.to_string(),
+            ByteCode::Load(c) => String::from("load\t") + &c.to_string(),
+            ByteCode::Set(c) => String::from("set\t") + &c.to_string(),
+            ByteCode::LoadLocal(c) => String::from("load_local\t") + &c.to_string(),
+            ByteCode::SetLocal(c) => String::from("set_klocal\t") + &c.to_string(),
             _ => String::from("[UNK]")
         }
     }
@@ -152,23 +58,23 @@ impl ByteCode {
 
 impl From<f64> for ByteCode {
     fn from(value: f64) -> Self {
-        Self::Constant(Constant::Float(value))
+        Self::Value(Value::Float(value))
     }
 }
 
 impl From<i64> for ByteCode {
     fn from(value: i64) -> Self {
-        Self::Constant(Constant::Int(value))
+        Self::Value(Value::Int(value))
     }
 }
 
 impl From<bool> for ByteCode {
     fn from(value: bool) -> Self {
-        Self::Constant(Constant::Bool(value))
+        Self::Value(Value::Bool(value))
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Chunk {
     pub code: Vec<ByteCode>,
     pub lines: Vec<usize>,
@@ -211,14 +117,14 @@ impl Chunk {
                 let number = sp.next().unwrap();
                 if ins == "C" {
                     if let Ok(x) = number.parse::<i64>() {
-                        chunk.add(ByteCode::Constant(Constant::Int(x)), 0);
+                        chunk.add(ByteCode::Value(Value::Int(x)), 0);
                     } else if let Ok(x) = number.parse::<f64>() {
-                        chunk.add(ByteCode::Constant(Constant::Float(x)), 0);
+                        chunk.add(ByteCode::Value(Value::Float(x)), 0);
                     } else if let Ok(x) = number.parse::<bool>() {
-                        chunk.add(ByteCode::Constant(Constant::Bool(x)), 0);
+                        chunk.add(ByteCode::Value(Value::Bool(x)), 0);
                     } else if number.starts_with("P_") {
                         let x = number[2..].parse::<usize>().unwrap();
-                        chunk.add(ByteCode::Constant(Constant::Ptr(x)), 0);
+                        chunk.add(ByteCode::Value(Value::Ptr(x)), 0);
                     }
                 }
             } else {
