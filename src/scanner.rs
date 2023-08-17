@@ -8,7 +8,7 @@ pub enum Token {
     Unk, Empty,
     LBrace, RBrace, LSBracket, RSBracket, LBracket, RBracket,
     Comma, Dot, Dollar, Colon, Pound, At, Semicolon,
-    Plus, Minus, Star, Slash, Mod, LAnd, LOr, LNot, Assign,
+    Plus, Minus, Star, Slash, Mod, LAnd, LOr, LNot, LXor, Assign, Shr, Shl,
     Eq, Ne, Le, Ge, Lt, Gt,
     Point, To, VSlash, Bang,
     BeginBlock, EndBlock,
@@ -74,7 +74,9 @@ impl Scanner {
                         token = match (ch, self.cur_char()) {
                             ('!', '=') => Token::Ne,
                             ('>', '=') => Token::Ge,
+                            ('>', '>') => Token::Shr,
                             ('<', '=') => Token::Le,
+                            ('<', '<') => Token::Shl,
                             ('-', '>') => Token::Point,
                             ('=', '>') => Token::To,
                             ('=', '=') => Token::Eq,
@@ -115,7 +117,8 @@ impl Scanner {
                 '+' => Token::Plus,
                 '*' => Token::Star,
                 '%' => Token::Mod,
-                '^' => Token::LNot,
+                '~' => Token::LNot,
+                '^' => Token::LXor,
                 '\\' => Token::VSlash,
                 _ => {
                     if ch.is_ascii_whitespace() {

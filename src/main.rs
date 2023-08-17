@@ -6,8 +6,6 @@ mod precidence;
 mod value;
 mod object;
 
-use std::rc::Rc;
-
 use bytecode::*;
 use virtual_machine::*;
 use scanner::*;
@@ -15,24 +13,14 @@ use parser::*;
 use value::*;
 use object::*;
 
-
-
 fn main() {
-
-    let a = ByteCode::Add;
-    let b = ByteCode::Add;
-
-    println!("{}", a==b);
-
-
-    let s = String::from("AAAAA");
-    print!("{}", s.len());
 
     let mut scanner = Scanner::from_file("test.dpp").unwrap();
     let token_list = scanner.scan();
     println!("{:?}", token_list);
     let mut prev_line = -1;
-    for x in token_list.iter()
+    for x in token_list
+                        .iter()
                         .filter(|x| if let Token::Empty = x.token {false} else {true}) {
         let token = &x.token;
         let line = x.line;
@@ -50,8 +38,8 @@ fn main() {
 
     println!();
     println!("{}", parser.get_chunk().disassemble());
-    let mut vm = VirtualMachine::new(parser.get_chunk().clone());
-    vm.debug = false;
+    let mut vm = VirtualMachine::from_parser(&parser);
+    // vm.debug = false;
     vm.constants = parser.constants.clone();
     
     let r = vm.interpret();

@@ -1,12 +1,22 @@
 use std::collections::HashMap;
-use std::ops::{Add, Sub, Mul, Div, Neg};
+use std::ops::{Add, Sub, Mul, Div, Neg, Rem, Shl, BitAnd, BitXor, BitOr, Shr};
 use std::path::Components;
 use std::vec;
 use std::io;
 
 use crate::bytecode::*;
+use crate::parser::Parser;
 use crate::value::*;
 use crate::object::*;
+
+
+#[derive(Default, Debug)]
+pub struct CallFrame {
+    pub func_id: usize,
+    pub ip: usize,
+    pub slot_index: usize,
+}
+
 
 pub enum InterpretError {
     RuntimeError,
@@ -19,9 +29,9 @@ pub type Stack = Vec<StackElem>;
 
 #[derive(Default, Debug)]
 pub struct VirtualMachine {
-    pub chunk: Chunk,
+    pub functions: Vec<Function>,
+    pub frames: Vec<CallFrame>,
     pub stack: Stack,
-    pub ip: usize,
     pub debug: bool,
     // pub static_table: Vec<dyn DObject>
     // pub panic_mode: bool,
@@ -33,7 +43,11 @@ macro_rules! apply_op_unary {
     ($this:ident, $check:ident, $func:ident) => {{
         $this.$check($this.peek(0), $this.peek(0)); 
         let a = $this.pop();
-        $this.push(Value::from(a.$func()));
+        let value = Value::from(a.$func());
+        if let Value::Nil = value {
+            $this.error("Wrong object type for the operator !");
+        }
+        $this.push(value);
     }};
 }
 
@@ -42,7 +56,11 @@ macro_rules! apply_op {
         $this.$check($this.peek(0), $this.peek(1)); 
         let a = $this.pop();
         let b = $this.pop(); 
-        $this.push(Value::from(b.$func(a)));
+        let value = Value::from(b.$func(a));
+        if let Value::Nil = value {
+            $this.error("Wrong object type for the operator !");
+        }
+        $this.push(value);
     }};
 }
 
@@ -50,21 +68,32 @@ macro_rules! apply_op_cmp {
     ($this:ident, $func:ident) => {{
         $this.check_number($this.peek(0), $this.peek(1)); 
         let a = &$this.pop();
-        let b = &$this.pop(); 
-        $this.push(Value::from(b.$func(a)));
+        let b = &$this.pop();
+        let value = Value::from(b.$func(a));
+        if let Value::Nil = value {
+            $this.error("Wrong object type for the operator!");
+        }
+        $this.push(value);
     }};
 }
 
 
 impl VirtualMachine {
 
-    pub fn new(chunk: Chunk) -> Self {
-        Self { chunk: chunk, stack: Vec::new(), ip: 0, debug: true,
-               global: HashMap::new(), constants: vec![] }
+    pub fn from_parser(parser: &Parser) -> Self {
+        let frame = CallFrame {
+            func_id: 0,
+            ip: 0,
+            slot_index: 0,
+        };
+        Self { stack: Vec::new(), debug: true,
+               global: HashMap::new(), constants: vec![] , 
+               functions: parser.functions.clone(), frames: vec![frame] }
     }
 
     pub fn push(&mut self, s: StackElem) {
         self.stack.push(s);
+        self.print_stack();
     }
 
     pub fn pop(&mut self) -> StackElem {
@@ -85,7 +114,9 @@ impl VirtualMachine {
             (Value::Int(_), Value::Float(_))   |
             (Value::Float(_), Value::Int(_))   |
             (Value::Float(_), Value::Float(_)) => (),
-            _ => self.error("The type to be operated shoule be Number")
+            _ => {
+                self.print_stack(); self.error("The type to be operated shoule be Number")
+            }
         }
     }
 
@@ -96,43 +127,76 @@ impl VirtualMachine {
         }
     }
 
+    fn current_chunk(&self) -> &Chunk {
+        let id = self.frames.last()
+                .unwrap_or_else(|| self.error("Frame empty error")).func_id;
+        &self.functions[id].chunk
+    }
+
+    fn get_ip(&self) -> usize {
+        self.frames.last().unwrap_or_else(|| self.error("Frame id overflow error")).ip        
+    }
+
+    fn set_ip(&mut self, ip: usize) {
+        let end_idx = self.frames.len() - 1;
+        self.frames[end_idx].ip = ip;
+    }
+
+    fn current_frame(&mut self) -> &mut CallFrame {
+        let end_idx = self.frames.len() - 1;
+        &mut self.frames[end_idx]
+    }
+
+    fn get_frame(&self) -> &CallFrame {
+        let end_idx = self.frames.len() - 1;
+        &self.frames[end_idx]
+    }
+
+
     pub fn interpret(&mut self) -> InterpretResult {
-        self.ip = 0;
         loop {
-            if self.ip >= self.chunk.len() {
+            if self.get_ip() >= self.current_chunk().len() {
                 return Ok(());
             }
-            let ins = &self.chunk.code[self.ip];
-            let lineno = &self.chunk.lines[self.ip];
+            let ins = &self.current_chunk().code[self.get_ip()];
+            let lineno = &self.current_chunk().lines[self.get_ip()];
             if self.debug {
                 let mut asm = String::new();
-                asm += &format!("I{}\t", self.ip.to_string());
+                asm += &format!("I{}\t", self.get_ip().to_string());
                 asm += &format!("L{}\t", lineno.to_string());
                 asm += &ins.disassemble();
                 println!("{}", asm);
             }
             // println!("RUN {}", ins.disassemble());
-            let mut next_ip = self.ip + 1;
+            let mut next_ip = self.get_ip() + 1;
+            // ins.disassemble();
             match ins {
                 ByteCode::Ret => {
                         next_ip = 
                             if let StackElem::Ptr(p) = self.pop() {p}
                             else { return Err(InterpretError::CompileError); };
                     },
-                ByteCode::Add => apply_op!(self, check_number, add),
-                ByteCode::Sub => apply_op!(self, check_number, sub),
-                ByteCode::Mul => apply_op!(self, check_number, mul),
-                ByteCode::Div => apply_op!(self, check_number, div),
-                ByteCode::And => apply_op!(self, check_bool, bool_and),
-                ByteCode::Or  => apply_op!(self, check_bool, bool_or),
-                ByteCode::Eq  => apply_op_cmp!(self, eq),
-                ByteCode::Ne  => apply_op_cmp!(self, ne),
-                ByteCode::Lt  => apply_op_cmp!(self, lt),
-                ByteCode::Le  => apply_op_cmp!(self, le),
-                ByteCode::Gt  => apply_op_cmp!(self, gt),
-                ByteCode::Ge  => apply_op_cmp!(self, ge),                
-                ByteCode::Neg => apply_op_unary!(self, check_number, neg),
-                ByteCode::Not => apply_op_unary!(self, check_bool, bool_not),
+                ByteCode::Add  => apply_op!(self, check_number, add),
+                ByteCode::Sub  => apply_op!(self, check_number, sub),
+                ByteCode::Mul  => apply_op!(self, check_number, mul),
+                ByteCode::Div  => apply_op!(self, check_number, div),
+                ByteCode::Mod  => apply_op!(self, check_number, rem),
+                ByteCode::Shl  => apply_op!(self, check_number, shl),
+                ByteCode::Shr  => apply_op!(self, check_number, shr),
+                ByteCode::LAnd => apply_op!(self, check_number, bitand),
+                ByteCode::LOr  => apply_op!(self, check_number, bitor),
+                ByteCode::LXor => apply_op!(self, check_number, bitxor),
+                ByteCode::And  => apply_op!(self, check_bool, bool_and),
+                ByteCode::Or   => apply_op!(self, check_bool, bool_or),
+                ByteCode::Eq   => apply_op_cmp!(self, eq),
+                ByteCode::Ne   => apply_op_cmp!(self, ne),
+                ByteCode::Lt   => apply_op_cmp!(self, lt),
+                ByteCode::Le   => apply_op_cmp!(self, le),
+                ByteCode::Gt   => apply_op_cmp!(self, gt),
+                ByteCode::Ge   => apply_op_cmp!(self, ge),                
+                ByteCode::Neg  => apply_op_unary!(self, check_number, neg),
+                ByteCode::Not  => apply_op_unary!(self, check_bool, bool_not),
+                ByteCode::LNot => apply_op_unary!(self, check_number, bitnot),
 
                 ByteCode::Out => { println!("[STDOUT] {}", self.top().to_str()); },
                 ByteCode::Value(c) => self.push(c.clone()),
@@ -202,17 +266,19 @@ impl VirtualMachine {
                     // self.pop();
                 },
                 ByteCode::LoadLocal(c) => { 
-                    if *c < self.stack.len() {
-                        let value = self.stack[*c].clone();
+                    let local_index = *c + self.get_frame().slot_index;
+                    if local_index < self.stack.len() {
+                        let value = self.stack[local_index].clone();
                         self.push(value.clone());
                     } else {
                         self.error("there's no such local variable !");
                     }
                 },
-                ByteCode::SetLocal(c) => { 
+                ByteCode::SetLocal(c) => {
+                    let local_index = *c + self.get_frame().slot_index;
                     let value = self.peek(0);
-                    if *c < self.stack.len() {
-                        self.stack[*c] = value.clone();
+                    if local_index < self.stack.len() {
+                        self.stack[local_index] = value.clone();
                     } else {
                         self.error("there's no such local variable !");
                     }
@@ -220,7 +286,7 @@ impl VirtualMachine {
                 },
                 _ => return Ok(()),
             }
-            self.ip = next_ip;
+            self.set_ip(next_ip);
             // self.print_stack();
         }
     }
@@ -234,7 +300,6 @@ impl VirtualMachine {
     }
 
     pub fn error(&self, msg: &str) -> ! {
-        panic!("Runtime Error: {} at line {}", msg, self.chunk.lines[self.ip])
+        panic!("Runtime Error: {} at line {}", msg, self.current_chunk().lines[self.get_ip()])
     }
-
 }

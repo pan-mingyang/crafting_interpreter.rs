@@ -10,7 +10,8 @@ pub enum ByteCode {
     Ret,
     Out,
     Value(Value),
-    Add, Sub, Mul, Div, Neg,
+    Add, Sub, Mul, Div, Neg, Mod,
+    Shr, Shl, LAnd, LOr, LXor, LNot,
     True, False,
     Nil,
     And, Or, Not,
@@ -50,6 +51,13 @@ impl ByteCode {
             ByteCode::Gt  => String::from("ge"),
             ByteCode::Pop  => String::from("pop"),
             ByteCode::Nop  => String::from("nop"),
+            ByteCode::Mod  => String::from("mod"),
+            ByteCode::Shl  => String::from("shl"),
+            ByteCode::Shr  => String::from("shr"),
+            ByteCode::LAnd  => String::from("land"),
+            ByteCode::LOr  => String::from("lor"),
+            ByteCode::LXor  => String::from("lxor"),
+            ByteCode::LNot  => String::from("lnot"),
             ByteCode::Push(c)  => String::from("push\t") + &c.to_str(),
             ByteCode::Value(c) => String::from("const\t") + &c.to_str(),
             ByteCode::DefGlobal(c) => String::from("def_global\t") + &c.to_string(),
@@ -91,7 +99,7 @@ impl From<String> for ByteCode {
 
 
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct Chunk {
     pub code: Vec<ByteCode>,
     pub lines: Vec<usize>,

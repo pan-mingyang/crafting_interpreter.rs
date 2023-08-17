@@ -1,9 +1,30 @@
-use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value};
+use std::{rc::Rc, cell::RefCell};
 
-#[derive(Default, Debug)]
+use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value, object::Function};
+
+
+
+#[derive(Default, Debug, Clone)]
+enum FunctionType {
+    #[default]
+    Func,
+    Script,
+}
+
+#[derive(Default, Debug, Clone)]
 struct Environment {
+    pub enclosing: Option<Box<Environment>>,
+    pub func_id: usize,
+    pub func_type: FunctionType,
     pub local: Vec<Local>,
     pub scope_depth: usize,
+}
+
+impl Environment {
+    pub fn new() -> Self {
+        Environment { 
+            enclosing: None, func_id: 0, func_type: FunctionType::Script, local: vec![], scope_depth: 0 }
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -15,6 +36,7 @@ struct Local {
 
 #[derive(Default, Debug)]
 pub struct Parser {
+    pub functions: Vec<Function>,
     tokens: Vec<TokenWithInfo>,
     ptr: usize,
     chunk: Chunk,
@@ -36,14 +58,37 @@ macro_rules! can_consume {
 
 impl Parser {
     pub fn from_tokens(tokens: Vec<TokenWithInfo>) -> Parser {
+        let default_function = Function {
+            name: String::from("$main"),
+            arity: 0,
+            chunk: Chunk::new()
+        };
+        let mut local: Vec<Local> = Vec::new();
+        // local.push(Local { name: Identifier { name: String::from("$main") }, depth: 0, init: true });
         Parser { tokens, ptr: 0, chunk: Chunk::new(), panic_mode: false, constants: vec![],
-                env: Environment { local: vec![] , scope_depth: 0 }, end_to_pop: true, }
+                 env: Environment::new(), end_to_pop: true, functions: vec![default_function] }
     }
 
     pub fn get_chunk(&self) -> &Chunk {
-        &self.chunk
+        &self.functions[0].chunk
     }
     
+    fn set_env(&mut self, env: Environment) {
+        let x = self.env.clone();
+        self.functions.push(Function { arity: 0, chunk: Chunk::new(), name: String::new() });
+        self.env = env;
+        self.env.func_id = self.functions.len() - 1;
+        self.env.enclosing = Some(Box::new(x));
+    }
+
+    fn reset_env(&mut self) {
+        if let Some(c) = &self.env.enclosing {
+            self.env = *c.clone()
+        } else {
+            self.error("no enclosing envs!")
+        }
+    }
+
     pub fn compile(&mut self) -> bool {
         let result = loop {
             self.statement();
@@ -57,14 +102,6 @@ impl Parser {
         self.emit_byte(ByteCode::Hlt);
         result
     }
-
-    // fn declaration(&mut self) {
-    //     match self.current().token {
-    //         Token::Keyword(Keyword::Let) => self.let_declaration(),
-    //         // Token::Keyword(Keyword::If)  => self.if_statement(),
-    //         _ => self.statement(),
-    //     }
-    // }
 
     fn if_statement(&mut self) {
         self.advance();
@@ -271,6 +308,10 @@ impl Parser {
                 self.let_declaration();
                 self.end_to_pop = false;
             },
+            Token::Keyword(Keyword::Func) => {
+                self.func_declaration();
+                self.end_to_pop = false
+            }
             _ => self.expression(),
         }
         if self.end_to_pop {
@@ -281,6 +322,35 @@ impl Parser {
         if self.panic_mode {
             self.synchronize();
         }
+    }
+
+
+    fn func_declaration(&mut self) {
+        // if self.env.scope_depth != 0 {
+        //     self.error("inner function is not supported!");
+        // }
+        self.advance();
+        if let Token::Identifier(Identifier{ name: func_name }) = self.current().token {
+            let global = self.parse_variable(func_name);
+            // mark initialized
+            if global == usize::MAX {
+                let last_idx = self.env.local.len() - 1;
+                self.env.local[last_idx].init = true;
+            }  
+            let env = Environment::new();
+            self.set_env(env);
+            self.func_param();
+
+            // define global
+            // todo!
+            self.reset_env();
+        } else {
+            self.error("Expect function name!");
+        }                
+    }
+
+    fn func_param(&mut self) {
+
     }
 
     fn block(&mut self) {
@@ -333,6 +403,7 @@ impl Parser {
             Token::Plus => (),
             Token::Minus => self.emit_byte(ByteCode::Neg),
             Token::Bang =>  self.emit_byte(ByteCode::Not),
+            Token::LNot =>  self.emit_byte(ByteCode::LNot),
             _ => self.error("Error Unary Operator!"),
         }
     }
@@ -346,15 +417,21 @@ impl Parser {
             Token::Minus  => self.emit_byte(ByteCode::Sub),
             Token::Star   => self.emit_byte(ByteCode::Mul),
             Token::Slash  => self.emit_byte(ByteCode::Div),
+            Token::Mod    => self.emit_byte(ByteCode::Mod),
             Token::Eq     => self.emit_byte(ByteCode::Eq),
             Token::Ne     => self.emit_byte(ByteCode::Ne),
             Token::Lt     => self.emit_byte(ByteCode::Lt),
             Token::Le     => self.emit_byte(ByteCode::Le),
             Token::Gt     => self.emit_byte(ByteCode::Gt),
             Token::Ge     => self.emit_byte(ByteCode::Ge),
+            Token::Shr    => self.emit_byte(ByteCode::Shr),
+            Token::Shl    => self.emit_byte(ByteCode::Shl),
+            Token::LAnd   => self.emit_byte(ByteCode::LAnd),
+            Token::LOr    => self.emit_byte(ByteCode::LOr),
+            Token::LXor   => self.emit_byte(ByteCode::LXor),
             Token::Keyword(Keyword::And) => self.emit_byte(ByteCode::And),
             Token::Keyword(Keyword::Or)  => self.emit_byte(ByteCode::Or),
-            _ => self.error("Error Binary Operator!"),
+            _ => self.error(&format!("Error Binary Operator! {:?}", prev)[..]),
         }
     }
 
@@ -363,12 +440,18 @@ impl Parser {
     {
         match token {
             Token::LBracket  => (Some(Self::group),  None,               Precedence::None),
-            Token::Bang | Token::Keyword(Keyword::Not)
-                            => (Some(Self::unary),  None,               Precedence::None),
+            Token::Bang | Token::Keyword(Keyword::Not) | Token::LNot
+                             => (Some(Self::unary),  None,               Precedence::None),
             Token::Plus      => (None,               Some(Self::binary), Precedence::Term),
             Token::Minus     => (Some(Self::unary),  Some(Self::binary), Precedence::Term),
             Token::Star      => (None,               Some(Self::binary), Precedence::Factor),
             Token::Slash     => (None,               Some(Self::binary), Precedence::Factor),
+            Token::Mod       => (None,               Some(Self::binary), Precedence::Factor),
+            Token::Shr       => (None,               Some(Self::binary), Precedence::Shift),
+            Token::Shl       => (None,               Some(Self::binary), Precedence::Shift),
+            Token::LOr       => (None,               Some(Self::binary), Precedence::LogicOr),
+            Token::LAnd      => (None,               Some(Self::binary), Precedence::LogicAnd),
+            Token::LXor      => (None,               Some(Self::binary), Precedence::LogicAnd),
             Token::Eq        => (None,               Some(Self::binary), Precedence::Eq),
             Token::Ne        => (None,               Some(Self::binary), Precedence::Eq),
             Token::Lt        => (None,               Some(Self::binary), Precedence::Cmp),
@@ -442,7 +525,7 @@ impl Parser {
     }
 
     fn current_chunk(&mut self) -> &mut Chunk {
-        &mut self.chunk
+        &mut self.functions[self.env.func_id].chunk
     }
 
     fn set_chunk(&mut self, ip: usize, value: ByteCode) {
