@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 use std::ops::{Add, Sub, Mul, Div, Neg, Rem, Shr, Shl, BitAnd, BitOr, BitXor};
 
-use crate::object::Object;
+use crate::object::{Object, Function};
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq, Copy)]
 pub enum Value {
     #[default]
     Nil,
@@ -13,8 +13,10 @@ pub enum Value {
     Float(f64),
     Ptr(usize),
     StaticPtr(usize),
-    String(String),
-    Obj(Object),
+    // String(String),
+    Obj(usize),
+    Function(usize),
+    NativeFunction(usize),
 }
 
 impl Value {
@@ -30,10 +32,22 @@ impl Value {
             },
             Value::Ptr(c) => format!("Ph_{}", c),
             Value::StaticPtr(c) => format!("Ps_{}", c),
-            Value::String(c) => format!("\"{}\"", c),
-            Value::Obj(c) => format!("\"<Object> 0x{:p}\"", c),
+            // Value::String(c) => format!("{}", c),
+            Value::Obj(c) => format!("<Object> {}", c),
+            Value::Function(c) => format!("<Function> {}", c),
+            Value::NativeFunction(c) => format!("<Native Fn> {}", c),
+            _ => String::new(),
         }
     }
+
+    pub fn to_str_detail(&self, obj_list: &Vec<Object>) -> String {
+        match self {
+            Value::Obj(c) => obj_list[*c].to_str(),
+            _ => String::new(),
+        }
+    }
+
+
 
     pub fn bool_and(self, rhs: Self) -> Self {
         match (self, rhs) {

@@ -1,7 +1,7 @@
 use std::{ops::{DerefMut, Deref}, fs::File, io::BufReader, cmp::Ordering};
 use std::io::prelude::*;
 
-use crate::value::*;
+use crate::{value::*, object::Object};
 
 #[derive(Default, Debug, PartialEq, Clone)]
 pub enum ByteCode {    
@@ -26,6 +26,7 @@ pub enum ByteCode {
     JNZ(usize),
     J(usize),
     Nop,
+    Call(usize),
 }
 
 
@@ -68,9 +69,19 @@ impl ByteCode {
             ByteCode::JZ(c) => String::from("jz\t") + &c.to_string(),
             ByteCode::JNZ(c) => String::from("jnz\t") + &c.to_string(),
             ByteCode::J(c) => String::from("j\t") + &c.to_string(),
+            ByteCode::Call(c) => String::from("call\t") + &c.to_string(),
             _ => String::from("[UNK]")
         }
     }
+
+
+    pub fn disassemble_detail(&self, obj_list: &Vec<Object>) -> String {
+        match self {
+            ByteCode::Value(Value::Obj(c)) => String::from("const\t") + obj_list[*c].to_str().as_str(),
+            _ => self.disassemble(),
+        }
+    }
+    
 }
 
 impl From<f64> for ByteCode {
@@ -91,11 +102,11 @@ impl From<bool> for ByteCode {
     }
 }
 
-impl From<String> for ByteCode {
-    fn from(value: String) -> Self {
-        Self::Value(Value::String(value))
-    }
-}
+// impl From<String> for ByteCode {
+//     fn from(value: String) -> Self {
+//         Self::Value(Value::String(value))
+//     }
+// }
 
 
 
@@ -175,6 +186,28 @@ impl Chunk {
             f.write(ins.disassemble().as_bytes()).unwrap();
             f.write("\n".as_bytes()).unwrap();
         }
+    }
+
+    pub fn to_string(&self) -> String {
+        // let mut f = File::create(filename).unwrap();
+        let mut s = String::new();
+        for ins in &self.code {
+            s.push_str("  ");
+            s.push_str(ins.disassemble().as_str());
+            s.push_str("\n");
+        }
+        s
+    }
+
+    pub fn to_string_detail(&self, obj_list: &Vec<Object>) -> String {
+        // let mut f = File::create(filename).unwrap();
+        let mut s = String::new();
+        for ins in &self.code {
+            s.push_str("  ");
+            s.push_str(ins.disassemble_detail(obj_list).as_str());
+            s.push_str("\n");
+        }
+        s
     }
 }
 

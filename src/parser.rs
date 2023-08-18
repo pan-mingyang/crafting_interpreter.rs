@@ -1,6 +1,6 @@
-use std::{rc::Rc, cell::RefCell};
+use std::{rc::Rc, cell::RefCell, vec};
 
-use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value, object::Function};
+use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value, object::{Function, Object}, helper::ToObject};
 
 
 
@@ -44,6 +44,7 @@ pub struct Parser {
     pub constants: Vec<Value>,
     env: Environment,
     end_to_pop: bool,
+    pub obj_list: Vec<Object>,
 }
 
 type ExpressionRult = (Option<fn(&mut Parser, bool)>, Option<fn(&mut Parser, bool)>, Precedence);
@@ -53,6 +54,14 @@ macro_rules! can_consume {
         if let $type = $val.current().token {true} else {false}
     };
 }
+
+
+macro_rules! consume {
+    ($val:expr, $type:pat, $msg:expr) => {
+        $val.consume(if let $type = $val.current().token {true} else {false}, $msg);
+    };
+}
+
 
 
 
@@ -66,17 +75,28 @@ impl Parser {
         let mut local: Vec<Local> = Vec::new();
         // local.push(Local { name: Identifier { name: String::from("$main") }, depth: 0, init: true });
         Parser { tokens, ptr: 0, chunk: Chunk::new(), panic_mode: false, constants: vec![],
-                 env: Environment::new(), end_to_pop: true, functions: vec![default_function] }
+                 env: Environment::new(), end_to_pop: true, functions: vec![default_function],
+                 obj_list: vec![] }
     }
 
     pub fn get_chunk(&self) -> &Chunk {
         &self.functions[0].chunk
     }
     
-    fn set_env(&mut self, env: Environment) {
+    fn set_env(&mut self, env: Environment, func_type: FunctionType) {
         let x = self.env.clone();
-        self.functions.push(Function { arity: 0, chunk: Chunk::new(), name: String::new() });
+        let mut func_name = String::new();
+        if !matches!(func_type, FunctionType::Script) {
+            func_name = if let Token::Identifier(Identifier{name}) = self.current().token{
+                name
+            } else {
+                self.error("Expect identifier");
+                func_name
+            }
+        }
+        self.functions.push(Function { arity: 0, chunk: Chunk::new(), name: func_name });
         self.env = env;
+
         self.env.func_id = self.functions.len() - 1;
         self.env.enclosing = Some(Box::new(x));
     }
@@ -93,7 +113,7 @@ impl Parser {
         let result = loop {
             self.statement();
             println!(" consume {:?}", self.current().token);
-            self.consume(can_consume!(self, Token::NewLine), "Expect <NEWLINE>");
+            consume!(self, Token::NewLine, "Expect <NEWLINE>");
             println!("{:?}", self.current().token);
             if let Token::Eof = self.current().token {
                 break true;
@@ -200,7 +220,8 @@ impl Parser {
             self.declare_variable();
             usize::MAX
         } else {
-            self.make_constant(Value::String(variable))
+            let val = variable.to_object(&mut self.obj_list);
+            self.make_constant(val)
         }
     }
 
@@ -244,7 +265,10 @@ impl Parser {
             }
         }
         for (i, constant) in self.constants.iter().enumerate() {
-            if let Value::String(s) = constant {
+            if let Value::Obj(s) = constant {
+                let Object::String(s) = &self.obj_list[*s] else {
+                    self.error("Expect String!"); panic!("")
+                };
                 if *s == *variable {
                     return ByteCode::Load(i);
                 }
@@ -309,7 +333,11 @@ impl Parser {
                 self.end_to_pop = false;
             },
             Token::Keyword(Keyword::Func) => {
-                self.func_declaration();
+                self.func_declaration(FunctionType::Func);
+                self.end_to_pop = false
+            }
+            Token::Keyword(Keyword::Return) => {
+                self.return_statement();
                 self.end_to_pop = false
             }
             _ => self.expression(),
@@ -324,33 +352,80 @@ impl Parser {
         }
     }
 
+    fn return_statement(&mut self) {
+        if self.env.scope_depth == 0 {
+            self.error("No need to return in the main scope!");
+        }
+        self.advance();
+        if let Token::NewLine = self.current().token {
+            self.emit_byte(ByteCode::Value(Value::Nil));
+        } else {
+            self.expression();
+        }
+        self.emit_byte(ByteCode::Ret);
+    }
 
-    fn func_declaration(&mut self) {
+    fn func_declaration(&mut self, func_type: FunctionType) {
         // if self.env.scope_depth != 0 {
         //     self.error("inner function is not supported!");
         // }
         self.advance();
         if let Token::Identifier(Identifier{ name: func_name }) = self.current().token {
-            let global = self.parse_variable(func_name);
+            let global: usize = self.parse_variable(func_name);
             // mark initialized
             if global == usize::MAX {
                 let last_idx = self.env.local.len() - 1;
                 self.env.local[last_idx].init = true;
             }  
             let env = Environment::new();
-            self.set_env(env);
-            self.func_param();
+            self.set_env(env, func_type);
+            let func_id = self.env.func_id;
 
-            // define global
-            // todo!
+            self.env.scope_depth += 1; // begin scope
+            self.advance();
+            self.func_param();
+            self.func_body();
             self.reset_env();
+            // define global
+            self.emit_byte(ByteCode::Value(Value::Function(func_id)));
+            if global < usize::MAX {
+                self.emit_byte(ByteCode::DefGlobal(global));
+            } else {
+                let last_idx = self.env.local.len() - 1;
+                self.env.local[last_idx].init = true;
+            }
+            
         } else {
             self.error("Expect function name!");
         }                
     }
 
     fn func_param(&mut self) {
+        consume!(self, Token::LBracket, "Expect '('");
+        while let Token::Identifier(Identifier {name}) = self.current().token {
+            self.functions[self.env.func_id].arity += 1;
+            let constant: usize = self.parse_variable(name);
+            assert_eq!(constant, usize::MAX);
+            
+            // def local variable:
+            let last_idx = self.env.local.len() - 1;
+            self.env.local[last_idx].init = true;
+            self.advance();
+            if !matches!(self.current().token, Token::Comma) {
+                break
+            }
+            self.advance();
+        }        
+        // println!("{:?}", self.current());
+        consume!(self, Token::RBracket, "Expect ')'");
+    }
 
+    fn func_body(&mut self) {
+        consume!(self, Token::Colon, "Expect ':'!");
+        consume!(self, Token::NewLine, "Expect new line!");
+        consume!(self, Token::BeginBlock, "Expect indent!");
+        self.block();
+        self.end_block(); // end scope
     }
 
     fn block(&mut self) {
@@ -358,14 +433,14 @@ impl Parser {
             println!("    Block {:?}", self.current().token);
             self.statement();
             println!("delc then {:?}", self.current());
-            self.consume(can_consume!(self, Token::NewLine), "Expect new Line");
+            consume!(self, Token::NewLine, "Expect new Line");
         }
     }
 
     fn begin_block(&mut self) {
-        self.consume(can_consume!(self, Token::Colon), "Expect ':'!");
-        self.consume(can_consume!(self, Token::NewLine), "Expect new line!");
-        self.consume(can_consume!(self, Token::BeginBlock), "Expect indent!");
+        consume!(self, Token::Colon, "Expect ':'!");
+        consume!(self, Token::NewLine, "Expect new line!");
+        consume!(self, Token::BeginBlock, "Expect indent!");
         self.env.scope_depth += 1;
     }  
 
@@ -388,9 +463,9 @@ impl Parser {
 
     fn print_statement(&mut self) {
         self.advance();
-        self.consume(can_consume!(self, Token::LBracket), "Expect '('");
+        consume!(self, Token::LBracket, "Expect '('");
         self.expression();
-        self.consume(can_consume!(self, Token::RBracket), "Expect ')'");
+        consume!(self, Token::RBracket, "Expect ')'");
         println!("End print {:?}", self.current().token);
         self.emit_byte(ByteCode::Out);
         self.emit_byte(ByteCode::Pop);
@@ -435,11 +510,32 @@ impl Parser {
         }
     }
 
+    fn call(&mut self, _: bool) {
+        // panic!("call {:?}", self.current());
+        let arg_num = self.argument_list();
+        self.emit_byte(ByteCode::Call(arg_num));
+    }
+
+    fn argument_list(&mut self) -> usize {
+        let mut arg_num = 0;
+        loop {
+            self.expression();
+            arg_num += 1;
+            if let Token::Comma = self.current().token {
+                self.advance();                
+            } else if matches!(self.current().token, Token::RBracket) {
+                break;
+            }
+        }
+        consume!(self, Token::RBracket, "Expect ')");
+        arg_num
+    }
+
     fn get_rule(token: Token) -> ExpressionRult
         // :returns: (prefix_fn, infix_fn, precedence)
     {
         match token {
-            Token::LBracket  => (Some(Self::group),  None,               Precedence::None),
+            Token::LBracket  => (Some(Self::group),  Some(Self::call),   Precedence::Call),
             Token::Bang | Token::Keyword(Keyword::Not) | Token::LNot
                              => (Some(Self::unary),  None,               Precedence::None),
             Token::Plus      => (None,               Some(Self::binary), Precedence::Term),
@@ -479,7 +575,11 @@ impl Parser {
         match token {
             Token::CInt(n) => self.emit_byte(ByteCode::from(*n)),
             Token::CFloat(n) => self.emit_byte(ByteCode::from(*n)),
-            Token::CStr(s) => self.emit_byte(ByteCode::from(s.clone())),
+            Token::CStr(s) => {
+                let val = s.to_object(&mut self.obj_list);
+                self.emit_byte(ByteCode::Value(val))
+            },
+            
             _ => self.error("Expect Number")
         }
     }

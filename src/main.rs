@@ -5,6 +5,8 @@ mod parser;
 mod precidence;
 mod value;
 mod object;
+mod native_functions;
+mod helper;
 
 use bytecode::*;
 use virtual_machine::*;
@@ -12,6 +14,7 @@ use scanner::*;
 use parser::*;
 use value::*;
 use object::*;
+use std::time::{Duration,Instant};
 
 fn main() {
 
@@ -34,19 +37,25 @@ fn main() {
     let mut parser = Parser::from_tokens(token_list);
     parser.compile();
     
-    parser.get_chunk().write_file("test_out.asm");
+    // parser.get_chunk().write_file("test_out.asm");
 
     println!();
     println!("{}", parser.get_chunk().disassemble());
     let mut vm = VirtualMachine::from_parser(&parser);
-    // vm.debug = false;
+    vm.debug = false;
     vm.constants = parser.constants.clone();
-    
-    let r = vm.interpret();
-
+    vm.write_file_detail("test_out.asm");
+    let now = Instant::now();
+    _ = vm.interpret();
+    println!("{} ms", now.elapsed().as_nanos() as f64 / 1000. / 1000.);
+    println!("{} s", now.elapsed().as_secs() as f64 / 1000. / 1000.);
     println!("\nConstants:");
     for x in &vm.constants {
-        println!("{:?}", x);
+        if let Value::Obj(c) = x {
+            println!("{}", vm.obj_list[*c].to_str());
+        } else {
+            println!("{:?}", x);
+        }
     }
 
     println!("\nGlobal:");
@@ -60,5 +69,9 @@ fn main() {
         println!("{:?}", x);
     }
     println!();
+
+    for func in vm.functions {
+        println!("{:>?} {:?} {:?}", func.name, func.arity, func.chunk.len());
+    }
 
 }

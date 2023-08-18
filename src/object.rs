@@ -1,6 +1,6 @@
 use std::vec;
 
-use crate::bytecode::Chunk;
+use crate::{bytecode::Chunk, value::Value};
 
 
 
@@ -12,6 +12,8 @@ pub enum Object {
     #[default]
     Obj,
     Function(Function),
+    List(Vec<Value>),
+    String(String),
 }
 
 
@@ -23,12 +25,24 @@ pub struct Function {
 }
 
 impl Function {
-
     pub fn new(s: String) -> Self {
         Function { arity: 0, chunk: Chunk { code: vec![], lines: vec![] }, name: s }
     }
-
 }
+
+
+impl Object {
+    pub fn to_str(&self) -> String {
+        let s = match self {
+            Object::Obj => String::from("<Object>"),
+            Object::Function(f) => format!("<fn {}>", f.name),
+            Object::List(f) => format!("<list> [{:?}]", f),
+            Object::String(s) => format!("<string> {}", s),
+        };
+        s
+    }
+}
+
 
 
 

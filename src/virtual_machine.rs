@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::ops::{Add, Sub, Mul, Div, Neg, Rem, Shl, BitAnd, BitXor, BitOr, Shr};
 use std::path::Components;
 use std::vec;
-use std::io;
+use std::io::{self, Write};
 
 use crate::bytecode::*;
+use crate::helper::ToObject;
 use crate::parser::Parser;
 use crate::value::*;
 use crate::object::*;
@@ -37,6 +39,7 @@ pub struct VirtualMachine {
     // pub panic_mode: bool,
     pub global: HashMap<String, Value>,
     pub constants: Vec<Value>,
+    pub obj_list: Vec<Object>,
 }
 
 macro_rules! apply_op_unary {
@@ -88,12 +91,13 @@ impl VirtualMachine {
         };
         Self { stack: Vec::new(), debug: true,
                global: HashMap::new(), constants: vec![] , 
-               functions: parser.functions.clone(), frames: vec![frame] }
+               functions: parser.functions.clone(), frames: vec![frame],
+               obj_list: parser.obj_list.clone() }
     }
 
     pub fn push(&mut self, s: StackElem) {
         self.stack.push(s);
-        self.print_stack();
+        // self.print_stack();
     }
 
     pub fn pop(&mut self) -> StackElem {
@@ -164,18 +168,13 @@ impl VirtualMachine {
                 let mut asm = String::new();
                 asm += &format!("I{}\t", self.get_ip().to_string());
                 asm += &format!("L{}\t", lineno.to_string());
-                asm += &ins.disassemble();
+                asm += &ins.disassemble_detail(&self.obj_list);
                 println!("{}", asm);
             }
             // println!("RUN {}", ins.disassemble());
             let mut next_ip = self.get_ip() + 1;
             // ins.disassemble();
             match ins {
-                ByteCode::Ret => {
-                        next_ip = 
-                            if let StackElem::Ptr(p) = self.pop() {p}
-                            else { return Err(InterpretError::CompileError); };
-                    },
                 ByteCode::Add  => apply_op!(self, check_number, add),
                 ByteCode::Sub  => apply_op!(self, check_number, sub),
                 ByteCode::Mul  => apply_op!(self, check_number, mul),
@@ -198,7 +197,13 @@ impl VirtualMachine {
                 ByteCode::Not  => apply_op_unary!(self, check_bool, bool_not),
                 ByteCode::LNot => apply_op_unary!(self, check_number, bitnot),
 
-                ByteCode::Out => { println!("[STDOUT] {}", self.top().to_str()); },
+                ByteCode::Out => { 
+                    if let Value::Obj(c) = self.top() {
+                        println!("[STDOUT] {}", self.obj_list[*c].to_str()); 
+                    } else {
+                        println!("[STDOUT] {}", self.top().to_str()); 
+                    }                    
+                },
                 ByteCode::Value(c) => self.push(c.clone()),
                 ByteCode::Hlt =>  return Ok(()),
                 ByteCode::Pop => {self.pop(); /*self.print_stack();*/},
@@ -226,7 +231,10 @@ impl VirtualMachine {
                     }
                 },
                 ByteCode::DefGlobal(c) => { 
-                    if let Value::String(s) = &self.constants[*c] {
+                    if let Value::Obj(s) = &self.constants[*c] {
+                        let Object::String(s) = &self.obj_list[*s] else {
+                            self.error("Expect String")
+                        };                        
                         let value = self.peek(0);
                         if !self.global.contains_key(s) {
                             self.global.insert(s.clone(), value.clone());
@@ -239,7 +247,10 @@ impl VirtualMachine {
                     self.pop();
                 },
                 ByteCode::Load(c) => { 
-                    if let Value::String(s) = &self.constants[*c] {
+                    if let Value::Obj(s) = &self.constants[*c] {
+                        let Object::String(s) = &self.obj_list[*s] else {
+                            self.error("Expect String")
+                        };
                         if self.global.contains_key(s) {
                             let value = self.global.get(s).unwrap();
                             self.push(value.clone());
@@ -252,7 +263,10 @@ impl VirtualMachine {
                     }
                 },
                 ByteCode::Set(c) => { 
-                    if let Value::String(s) = &self.constants[*c] {
+                    if let Value::Obj(s) = &self.constants[*c] {
+                        let Object::String(s) = &self.obj_list[*s] else {
+                            self.error("Expect String")
+                        };
                         if self.global.contains_key(s) {
                             let value = self.peek(0);
                             self.global.insert(s.clone(), value.clone());
@@ -284,10 +298,47 @@ impl VirtualMachine {
                     }
                     // self.pop();
                 },
+                ByteCode::Call(arg_num) => {
+                    let slot = self.stack.len() - arg_num;
+                    let Value::Function(func_id) = self.peek(*arg_num) else {
+                        self.error("Expect Function in stack");
+                    };
+                    self.frames.push(CallFrame { 
+                        func_id: *func_id, 
+                        ip: 0, 
+                        slot_index: slot
+                    });
+                    next_ip = usize::MAX;
+                },
+                ByteCode::Ret => {
+                    // self.print_stack();
+                    let ret_val = self.pop();
+                    let slot: usize = self.get_frame().slot_index;
+                    // println!("{}", slot);
+                    self.stack_back_to(slot - 1);
+                    self.frames.pop();
+                    self.push(ret_val);
+                    next_ip = self.get_ip() + 1;
+                    // next_ip = 
+                    //     if let StackElem::Ptr(p) = self.pop() {p}
+                    //     else { return Err(InterpretError::CompileError); };
+                },
                 _ => return Ok(()),
             }
-            self.set_ip(next_ip);
+            if next_ip < usize::MAX {
+                self.set_ip(next_ip);
+            }
             // self.print_stack();
+        }
+    }
+
+    fn stack_back_to(&mut self, index: usize) {
+        let end = self.stack.len() - 1;
+        if end < index {
+            return;
+        }
+        for _ in index..=end {
+            _ = self.pop();
         }
     }
 
@@ -302,4 +353,19 @@ impl VirtualMachine {
     pub fn error(&self, msg: &str) -> ! {
         panic!("Runtime Error: {} at line {}", msg, self.current_chunk().lines[self.get_ip()])
     }
+
+    pub fn write_file(&self, filename: &str) {
+        let mut f = File::create(filename).unwrap();
+        for func in &self.functions {
+            f.write(format!("{}\n{}\n", func.name, func.chunk.to_string()).as_bytes()).unwrap();
+        }
+    }
+    pub fn write_file_detail(&self, filename: &str) {
+        let mut f = File::create(filename).unwrap();
+        for func in &self.functions {
+            f.write(format!("{}\n{}\n", func.name, func.chunk.to_string_detail(&self.obj_list))
+                    .as_bytes()).unwrap();
+        }
+    }
+
 }
