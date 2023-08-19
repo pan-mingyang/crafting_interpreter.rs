@@ -16,8 +16,12 @@ use value::*;
 use object::*;
 use std::time::{Duration,Instant};
 
+use crate::native_functions::Native;
+
 fn main() {
 
+    let native_functions = Native::new();
+    
     let mut scanner = Scanner::from_file("test.dpp").unwrap();
     let token_list = scanner.scan();
     println!("{:?}", token_list);
@@ -34,7 +38,7 @@ fn main() {
         println!("{}\t{:>?}", line, token);
     }
 
-    let mut parser = Parser::from_tokens(token_list);
+    let mut parser = Parser::from_tokens(token_list, native_functions);
     parser.compile();
     
     // parser.get_chunk().write_file("test_out.asm");

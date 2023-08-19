@@ -7,6 +7,7 @@ use std::io::{self, Write};
 
 use crate::bytecode::*;
 use crate::helper::ToObject;
+use crate::native_functions::Native;
 use crate::parser::Parser;
 use crate::value::*;
 use crate::object::*;
@@ -40,6 +41,7 @@ pub struct VirtualMachine {
     pub global: HashMap<String, Value>,
     pub constants: Vec<Value>,
     pub obj_list: Vec<Object>,
+    pub native_functions: Native
 }
 
 macro_rules! apply_op_unary {
@@ -92,7 +94,7 @@ impl VirtualMachine {
         Self { stack: Vec::new(), debug: true,
                global: HashMap::new(), constants: vec![] , 
                functions: parser.functions.clone(), frames: vec![frame],
-               obj_list: parser.obj_list.clone() }
+               obj_list: parser.obj_list.clone(), native_functions: parser.native_functions.clone() }
     }
 
     pub fn push(&mut self, s: StackElem) {
@@ -162,8 +164,8 @@ impl VirtualMachine {
             if self.get_ip() >= self.current_chunk().len() {
                 return Ok(());
             }
-            let ins = &self.current_chunk().code[self.get_ip()];
-            let lineno = &self.current_chunk().lines[self.get_ip()];
+            let ins = self.current_chunk().code[self.get_ip()].clone();
+            let lineno = self.current_chunk().lines[self.get_ip()];
             if self.debug {
                 let mut asm = String::new();
                 asm += &format!("I{}\t", self.get_ip().to_string());
@@ -208,7 +210,7 @@ impl VirtualMachine {
                 ByteCode::Hlt =>  return Ok(()),
                 ByteCode::Pop => {self.pop(); /*self.print_stack();*/},
                 ByteCode::J(n) => {
-                    next_ip = *n;
+                    next_ip = n;
                     // println!("GLobal {:?}", self.global);
                     // let mut s = String::new();
                     // io::stdin().read_line(&mut s);
@@ -216,7 +218,7 @@ impl VirtualMachine {
                 ByteCode::Nop => (),
                 ByteCode::JZ(n) => { 
                     if let Value::Bool(b) = self.peek(0) {
-                        if !*b { next_ip = *n; }
+                        if !*b { next_ip = n; }
                         self.pop();
                     } else {
                         self.error("Expect bool on stack top!");
@@ -224,14 +226,14 @@ impl VirtualMachine {
                 },
                 ByteCode::JNZ(n) => { 
                     if let Value::Bool(b) = self.peek(0) {
-                        if *b { next_ip = *n; }
+                        if *b { next_ip = n; }
                         self.pop();
                     } else {
                         self.error("Expect bool on stack top!");
                     }
                 },
                 ByteCode::DefGlobal(c) => { 
-                    if let Value::Obj(s) = &self.constants[*c] {
+                    if let Value::Obj(s) = &self.constants[c] {
                         let Object::String(s) = &self.obj_list[*s] else {
                             self.error("Expect String")
                         };                        
@@ -247,7 +249,7 @@ impl VirtualMachine {
                     self.pop();
                 },
                 ByteCode::Load(c) => { 
-                    if let Value::Obj(s) = &self.constants[*c] {
+                    if let Value::Obj(s) = &self.constants[c] {
                         let Object::String(s) = &self.obj_list[*s] else {
                             self.error("Expect String")
                         };
@@ -262,8 +264,24 @@ impl VirtualMachine {
                         self.error("Error variable name type!");
                     }
                 },
-                ByteCode::Set(c) => { 
-                    if let Value::Obj(s) = &self.constants[*c] {
+                ByteCode::LoadNative(c) => { 
+                    if let Value::Obj(s) = &self.constants[c] {
+                        let Object::String(str) = &self.obj_list[*s] else {
+                            self.error("Expect String")
+                        };
+                        if self.native_functions.contains_key(str) {
+                            // let value = self.native_functions.get(s).unwrap();
+                            self.push(Value::NativeFunction(*s));
+                        }
+                        else {
+                            self.error(&format!("Variable name '{}' is not defined!", s)[..]);
+                        }
+                    } else {
+                        self.error("Error variable name type!");
+                    }
+                },
+                ByteCode::Set(c) => {
+                    if let Value::Obj(s) = &self.constants[c] {
                         let Object::String(s) = &self.obj_list[*s] else {
                             self.error("Expect String")
                         };
@@ -280,7 +298,7 @@ impl VirtualMachine {
                     // self.pop();
                 },
                 ByteCode::LoadLocal(c) => { 
-                    let local_index = *c + self.get_frame().slot_index;
+                    let local_index = c + self.get_frame().slot_index;
                     if local_index < self.stack.len() {
                         let value = self.stack[local_index].clone();
                         self.push(value.clone());
@@ -289,7 +307,7 @@ impl VirtualMachine {
                     }
                 },
                 ByteCode::SetLocal(c) => {
-                    let local_index = *c + self.get_frame().slot_index;
+                    let local_index = c + self.get_frame().slot_index;
                     let value = self.peek(0);
                     if local_index < self.stack.len() {
                         self.stack[local_index] = value.clone();
@@ -300,7 +318,7 @@ impl VirtualMachine {
                 },
                 ByteCode::Call(arg_num) => {
                     let slot = self.stack.len() - arg_num;
-                    let Value::Function(func_id) = self.peek(*arg_num) else {
+                    let Value::Function(func_id) = self.peek(arg_num) else {
                         self.error("Expect Function in stack");
                     };
                     self.frames.push(CallFrame { 
@@ -310,18 +328,30 @@ impl VirtualMachine {
                     });
                     next_ip = usize::MAX;
                 },
+                ByteCode::CallNative(arg_num) => {
+                    self.print_stack();
+                    let slot = self.stack.len() - arg_num;
+                    println!("{}", slot);
+                    let Value::NativeFunction(obj_id) = self.peek(0) else {
+                        self.error("Expect Function in stack");
+                    };
+                    let Object::String(func_name) = self.obj_list[*obj_id].clone() else {
+                        self.error("Expect String in stack");
+                    };
+                    self.pop();
+                    let native_fn = self.native_functions[&func_name];
+                    let args = self.get_args(arg_num);
+                    let val = native_fn(&mut self.obj_list, arg_num, args);
+                    self.stack_back_to(slot - 1);
+                    self.push(val);
+                },
                 ByteCode::Ret => {
-                    // self.print_stack();
                     let ret_val = self.pop();
                     let slot: usize = self.get_frame().slot_index;
-                    // println!("{}", slot);
                     self.stack_back_to(slot - 1);
                     self.frames.pop();
                     self.push(ret_val);
                     next_ip = self.get_ip() + 1;
-                    // next_ip = 
-                    //     if let StackElem::Ptr(p) = self.pop() {p}
-                    //     else { return Err(InterpretError::CompileError); };
                 },
                 _ => return Ok(()),
             }
@@ -332,7 +362,18 @@ impl VirtualMachine {
         }
     }
 
+    fn get_args(&mut self, num: usize) -> Vec<Value> {
+        let mut args = vec![];
+        for i in 0..num {
+            args.push(self.pop());
+        }
+        args
+    }
+
     fn stack_back_to(&mut self, index: usize) {
+        if self.stack.len() == index {
+            return;
+        }
         let end = self.stack.len() - 1;
         if end < index {
             return;
@@ -363,7 +404,7 @@ impl VirtualMachine {
     pub fn write_file_detail(&self, filename: &str) {
         let mut f = File::create(filename).unwrap();
         for func in &self.functions {
-            f.write(format!("{}\n{}\n", func.name, func.chunk.to_string_detail(&self.obj_list))
+            f.write(format!("<fn> {}:\n{}\n", func.name, func.chunk.to_string_detail(&self.obj_list))
                     .as_bytes()).unwrap();
         }
     }

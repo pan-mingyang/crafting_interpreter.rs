@@ -19,6 +19,7 @@ pub enum ByteCode {
     Pop, Push(Value),
     DefGlobal(usize),
     Load(usize),
+    LoadNative(usize),
     Set(usize),
     LoadLocal(usize),
     SetLocal(usize),
@@ -27,6 +28,7 @@ pub enum ByteCode {
     J(usize),
     Nop,
     Call(usize),
+    CallNative(usize)
 }
 
 
@@ -63,6 +65,7 @@ impl ByteCode {
             ByteCode::Value(c) => String::from("const\t") + &c.to_str(),
             ByteCode::DefGlobal(c) => String::from("def_global\t") + &c.to_string(),
             ByteCode::Load(c) => String::from("load\t") + &c.to_string(),
+            ByteCode::LoadNative(c) => String::from("load_native\t") + &c.to_string(),
             ByteCode::Set(c) => String::from("set\t") + &c.to_string(),
             ByteCode::LoadLocal(c) => String::from("load_local\t") + &c.to_string(),
             ByteCode::SetLocal(c) => String::from("set_local\t") + &c.to_string(),
@@ -70,6 +73,7 @@ impl ByteCode {
             ByteCode::JNZ(c) => String::from("jnz\t") + &c.to_string(),
             ByteCode::J(c) => String::from("j\t") + &c.to_string(),
             ByteCode::Call(c) => String::from("call\t") + &c.to_string(),
+            ByteCode::CallNative(c) => String::from("call_native\t") + &c.to_string(),
             _ => String::from("[UNK]")
         }
     }

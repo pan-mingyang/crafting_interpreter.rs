@@ -36,7 +36,16 @@ impl Object {
         let s = match self {
             Object::Obj => String::from("<Object>"),
             Object::Function(f) => format!("<fn {}>", f.name),
-            Object::List(f) => format!("<list> [{:?}]", f),
+            Object::List(f) => {
+                let mut s = String::new();
+                for (i, val) in f.iter().enumerate() {
+                    s.push_str(&val.to_str());
+                    if i < f.len() - 1 {
+                        s.push_str(", ");
+                    }
+                }
+                format!("<list> [{}]", s)
+            },
             Object::String(s) => format!("<string> {}", s),
         };
         s

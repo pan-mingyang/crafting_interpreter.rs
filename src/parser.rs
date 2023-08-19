@@ -1,6 +1,6 @@
 use std::{rc::Rc, cell::RefCell, vec};
 
-use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value, object::{Function, Object}, helper::ToObject};
+use crate::{scanner::*, bytecode::*, precidence::Precedence, value::Value, object::{Function, Object}, helper::ToObject, native_functions::Native};
 
 
 
@@ -45,9 +45,12 @@ pub struct Parser {
     env: Environment,
     end_to_pop: bool,
     pub obj_list: Vec<Object>,
+    pub native_functions: Native,
 }
 
-type ExpressionRult = (Option<fn(&mut Parser, bool)>, Option<fn(&mut Parser, bool)>, Precedence);
+type ExpressionRult = (Option<fn(&mut Parser, bool)>, 
+                                 Option<fn(&mut Parser, bool)>, 
+                                 Precedence);
 
 macro_rules! can_consume {
     ($val:expr, $type:pat) => {
@@ -66,17 +69,27 @@ macro_rules! consume {
 
 
 impl Parser {
-    pub fn from_tokens(tokens: Vec<TokenWithInfo>) -> Parser {
+    pub fn from_tokens(tokens: Vec<TokenWithInfo>, native: Native) -> Parser {
         let default_function = Function {
             name: String::from("$main"),
             arity: 0,
             chunk: Chunk::new()
         };
         let mut local: Vec<Local> = Vec::new();
-        // local.push(Local { name: Identifier { name: String::from("$main") }, depth: 0, init: true });
+        let mut constants: Vec<Value> = Vec::new();
+        let mut result = 
         Parser { tokens, ptr: 0, chunk: Chunk::new(), panic_mode: false, constants: vec![],
                  env: Environment::new(), end_to_pop: true, functions: vec![default_function],
-                 obj_list: vec![] }
+                 obj_list: vec![], native_functions: native };
+        result.init_native();
+        result
+    }
+
+    pub fn init_native(&mut self) {
+        for (name, _) in self.native_functions.iter() {
+            let val = name.to_object(&mut self.obj_list);
+            self.constants.push(val);
+        }
     }
 
     pub fn get_chunk(&self) -> &Chunk {
@@ -188,7 +201,7 @@ impl Parser {
                     match self.current().token {
                         Token::Comma => { self.advance(); },
                         Token::NewLine | Token::Eof => to_break = true,
-                        _ => self.error("Wrong variable declaration statement")
+                        _ => self.error(&format!("Wrong variable declaration statement {:?}", self.current().token))
                     }
                 },
                 Token::Comma => { self.emit_byte(ByteCode::Nil); self.advance(); },
@@ -255,7 +268,23 @@ impl Parser {
     }
 
     fn get_variable(&mut self, variable: &String) -> ByteCode {
+        if variable.starts_with("$") {
+            for (i, constant) in self.constants.iter().enumerate() {
+                if let Value::Obj(s) = constant {
+                    let Object::String(s) = &self.obj_list[*s] else {
+                        self.error("Expect String!"); panic!("")
+                    };
+                    if *s == *variable {
+                        return ByteCode::LoadNative(i);
+                    }
+                }
+            }
+            self.error(&format!("undefined native function {}", variable));
+            return ByteCode::Nil;
+        }
+
         let length = self.env.local.len();
+        // local
         if !self.env.local.is_empty() {
             for i in (0..length).rev() {
                 let s = self.env.local[i].name.name.clone();
@@ -264,6 +293,7 @@ impl Parser {
                 }
             }
         }
+        // global
         for (i, constant) in self.constants.iter().enumerate() {
             if let Value::Obj(s) = constant {
                 let Object::String(s) = &self.obj_list[*s] else {
@@ -292,7 +322,7 @@ impl Parser {
             } else {
                 self.emit_byte(index);
             }
-        }
+        } // no else
     }
 
     fn group(&mut self, can_assign: bool) {
@@ -301,7 +331,26 @@ impl Parser {
     }
 
     fn expression(&mut self) {
-        self.parse_precedence(Precedence::Assign);
+        if let Token::Keyword(Keyword::List) = self.current().token {
+            self.new_list();
+        } else {
+            self.parse_precedence(Precedence::Assign);
+        }
+    }
+
+    fn new_list(&mut self) {
+        self.advance();
+        consume!(self, Token::LBracket, "Expect '('");
+        let mut arg_n = 1;
+        self.expression();
+        if matches!(self.current().token, Token::Comma) {
+            self.expression();
+            arg_n = 2;
+        }
+        let bc = self.get_variable(&String::from("$new_empty_list"));
+        self.emit_byte(bc);
+        self.emit_byte(ByteCode::CallNative(arg_n));
+        consume!(self, Token::RBracket, "Expect ')'");
     }
 
     fn statement(&mut self) {
@@ -477,8 +526,8 @@ impl Parser {
         match prev.token {
             Token::Plus => (),
             Token::Minus => self.emit_byte(ByteCode::Neg),
-            Token::Bang =>  self.emit_byte(ByteCode::Not),
-            Token::LNot =>  self.emit_byte(ByteCode::LNot),
+            Token::Bang  => self.emit_byte(ByteCode::Not),
+            Token::LNot  => self.emit_byte(ByteCode::LNot),
             _ => self.error("Error Unary Operator!"),
         }
     }
@@ -510,6 +559,41 @@ impl Parser {
         }
     }
 
+    fn list(&mut self, _: bool) {
+        let bc = self.get_variable(&String::from("$list"));
+        assert!(matches!(bc, ByteCode::LoadNative(_)));
+        let mut n_args = 0;
+        while !matches!(self.current().token, Token::RSBracket) {
+            self.expression();
+            n_args += 1;
+
+            if let Token::Comma = self.current().token {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        consume!(self, Token::RSBracket, "Expect ']'");
+        self.emit_byte(bc);
+        self.emit_byte(ByteCode::CallNative(n_args));
+    }
+
+    fn index(&mut self, can_assign: bool) {
+        self.expression();
+        consume!(self, Token::RSBracket, "Expect ']'");        
+        if can_assign && matches!(self.current().token, Token::Assign) {
+            self.advance();
+            self.expression();
+            let bc = self.get_variable(&String::from("$list->set"));
+            self.emit_byte(bc);
+            self.emit_byte(ByteCode::CallNative(3));
+        } else {
+            let bc = self.get_variable(&String::from("$list->get"));
+            self.emit_byte(bc);
+            self.emit_byte(ByteCode::CallNative(2));
+        }
+    }
+
     fn call(&mut self, _: bool) {
         // panic!("call {:?}", self.current());
         let arg_num = self.argument_list();
@@ -536,6 +620,7 @@ impl Parser {
     {
         match token {
             Token::LBracket  => (Some(Self::group),  Some(Self::call),   Precedence::Call),
+            Token::LSBracket => (Some(Self::list),   Some(Self::index),  Precedence::Call),
             Token::Bang | Token::Keyword(Keyword::Not) | Token::LNot
                              => (Some(Self::unary),  None,               Precedence::None),
             Token::Plus      => (None,               Some(Self::binary), Precedence::Term),

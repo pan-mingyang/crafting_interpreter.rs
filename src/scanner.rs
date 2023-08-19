@@ -29,7 +29,7 @@ pub enum Keyword {
     And, Or, Not, Int, Str, Float, Bool,
     True, False, Nil,
     Import, Return, Kself,
-    Print, Block
+    Print, Block, List,
 }
 
 
@@ -243,6 +243,7 @@ impl Scanner {
             "self" => Token::Keyword(Keyword::Kself),
             "print" => Token::Keyword(Keyword::Print),
             "block" => Token::Keyword(Keyword::Block),
+            "list" => Token::Keyword(Keyword::List),
             s => Token::Identifier(Identifier { name: String::from(s) }),
         }
 
